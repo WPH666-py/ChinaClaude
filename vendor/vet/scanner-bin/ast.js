@@ -1,0 +1,244 @@
+/**
+ * Read-only TypeScript-compiler helpers: parse, walk, stringy static evaluation,
+ * and a pragmatic lexical shadowing check. Never transpiles or type-checks.
+ * @module dsh-plugin-vet/scanner-ast
+ */
+import ts from 'typescript';
+/** Parse one source string into a SourceFile with parent pointers (read-only). */
+export function parseSource(code, filename, language) {
+    const scriptKind = language === 'ts' ? ts.ScriptKind.TS : ts.ScriptKind.JS;
+    return ts.createSourceFile(filename, code, ts.ScriptTarget.Latest, /*setParentNodes*/ true, scriptKind);
+}
+/** Depth-first traversal; `visit` runs on every node including the root. */
+export function walk(node, visit) {
+    visit(node);
+    ts.forEachChild(node, child => walk(child, visit));
+}
+// ---------------------------------------------------------------------------
+// Stringy static evaluation (for R1/R2 escape-argument checks)
+// ---------------------------------------------------------------------------
+const constInitializers = new WeakMap();
+function initializerMap(sf) {
+    let map = constInitializers.get(sf);
+    if (map !== undefined)
+        return map;
+    map = new Map();
+    walk(sf, n => {
+        if (!ts.isVariableDeclaration(n))
+            return;
+        if (n.initializer === undefined)
+            return;
+        const name = n.name;
+        if (!ts.isIdentifier(name) || name.text === '')
+            return;
+        if (!map.has(name.text))
+            map.set(name.text, n.initializer);
+    });
+    constInitializers.set(sf, map);
+    return map;
+}
+/**
+ * Statically evaluate a string-ish expression: string literal, template
+ * without substitutions, binary `+` of stringy parts, or an identifier bound
+ * to a const/let string initializer (first declaration wins; v1 heuristic).
+ */
+export function stringyValue(node, sf) {
+    return stringyValueInner(node, sf, new Set(), 0);
+}
+/**
+ * 0.3.9（审查修复）：求值主体加**环检测 + 深度帽**。
+ * 此前 `const x = x + 'a';`（合法语法，TDZ 只有运行期才报）会让标识符分支取回自己的
+ * 初始化器无限递归 → RangeError 冒到 scan() 顶层 → **整包 ok:false**，同包其它文件的
+ * critical 命中一并丢失（deny 模式 fail-closed 误拦 / report 模式 scan-fail）。
+ * 互引（const a = b + 'x'; const b = a + 'y'）同源。深度帽另外挡住超长 `+` 链的栈溢出。
+ */
+const STRINGY_MAX_DEPTH = 64;
+function stringyValueInner(node, sf, seen, depth) {
+    if (depth > STRINGY_MAX_DEPTH)
+        return undefined;
+    if (seen.has(node))
+        return undefined;
+    seen.add(node);
+    try {
+        if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) {
+            return { text: node.text, exact: true };
+        }
+        if (ts.isTemplateExpression(node)) {
+            const parts = [node.head.text];
+            for (const span of node.templateSpans) {
+                const sub = stringyValueInner(span.expression, sf, seen, depth + 1);
+                if (sub === undefined)
+                    return undefined;
+                parts.push(sub.text, span.literal.text);
+            }
+            return { text: parts.join(''), exact: false };
+        }
+        if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.PlusToken) {
+            const left = stringyValueInner(node.left, sf, seen, depth + 1);
+            const right = stringyValueInner(node.right, sf, seen, depth + 1);
+            if (left === undefined || right === undefined)
+                return undefined;
+            return { text: left.text + right.text, exact: false };
+        }
+        if (ts.isIdentifier(node)) {
+            // round-16：词法遮蔽——形参/局部声明遮蔽同名模块级 const 时必须放弃求值
+            // （此前 `const url='/etc/passwd'` + `function f(url){…}` 会把形参解析成模块级
+            // 常量 → R11 敏感路径误报；isShadowed 只在 R2/R3/R4 直用，stringyValue 的共同
+            // 消费者（R11/R20/capability）此前全部暴露）。
+            if (isShadowedForStringy(node.text, node))
+                return undefined;
+            const init = initializerMap(sf).get(node.text);
+            if (init === undefined)
+                return undefined;
+            return stringyValueInner(init, sf, seen, depth + 1);
+        }
+        return undefined;
+    }
+    finally {
+        seen.delete(node);
+    }
+}
+/**
+ * Statically evaluate a numeric-ish expression: numeric literal (1e9/0x/1_000
+ * forms), `**`/`<<`/`*`/`+`/`-` binary ops, unary minus, parentheses, or an
+ * identifier bound to a numeric const/let initializer (same first-declaration
+ * heuristic as {@link stringyValue}). Undefined when not statically numeric.
+ * For R9 unbounded-allocation checks.
+ */
+export function numberyValue(node, sf) {
+    return numberyValueInner(node, sf, new Set(), 0);
+}
+/** 0.3.9（审查修复）：与 stringyValue 同款环检测 + 深度帽（`const n = n * 2;` 自引用
+ * 此前同样无限递归 → 整包 ok:false）。 */
+const NUMBERY_MAX_DEPTH = 64;
+function numberyValueInner(node, sf, seen, depth) {
+    if (depth > NUMBERY_MAX_DEPTH)
+        return undefined;
+    if (seen.has(node))
+        return undefined;
+    seen.add(node);
+    try {
+        if (ts.isNumericLiteral(node)) {
+            return Number(node.text.replace(/_/g, ''));
+        }
+        if (ts.isParenthesizedExpression(node)) {
+            return numberyValueInner(node.expression, sf, seen, depth + 1);
+        }
+        if (ts.isPrefixUnaryExpression(node) && node.operator === ts.SyntaxKind.MinusToken) {
+            const v = numberyValueInner(node.operand, sf, seen, depth + 1);
+            return v === undefined ? undefined : -v;
+        }
+        if (ts.isBinaryExpression(node)) {
+            const left = numberyValueInner(node.left, sf, seen, depth + 1);
+            const right = numberyValueInner(node.right, sf, seen, depth + 1);
+            if (left === undefined || right === undefined)
+                return undefined;
+            switch (node.operatorToken.kind) {
+                case ts.SyntaxKind.AsteriskAsteriskToken: return left ** right;
+                case ts.SyntaxKind.LessThanLessThanToken: return left << right;
+                case ts.SyntaxKind.AsteriskToken: return left * right;
+                case ts.SyntaxKind.PlusToken: return left + right;
+                case ts.SyntaxKind.MinusToken: return left - right;
+                default: return undefined;
+            }
+        }
+        if (ts.isIdentifier(node)) {
+            // round-16：与 stringyValue 同款遮蔽防护（numberyValue 的标识符解析同样吃形参遮蔽）
+            if (isShadowedForStringy(node.text, node))
+                return undefined;
+            const init = initializerMap(sf).get(node.text);
+            if (init === undefined)
+                return undefined;
+            return numberyValueInner(init, sf, seen, depth + 1);
+        }
+        return undefined;
+    }
+    finally {
+        seen.delete(node);
+    }
+}
+// ---------------------------------------------------------------------------
+// Pragmatic lexical shadowing (for R3/R4 identifier-source checks)
+// ---------------------------------------------------------------------------
+function declaresInBlock(block, name) {
+    for (const stmt of block.statements) {
+        if (ts.isVariableStatement(stmt)) {
+            for (const decl of stmt.declarationList.declarations) {
+                if (decl.name.getText() === name)
+                    return true;
+            }
+        }
+        else if (ts.isFunctionDeclaration(stmt) && stmt.name !== undefined && stmt.name.text === name) {
+            return true;
+        }
+        else if (ts.isClassDeclaration(stmt) && stmt.name !== undefined && stmt.name.text === name) {
+            return true;
+        }
+    }
+    return false;
+}
+/**
+ * Whether `name` is shadowed at the position of `id`: walk the ancestor chain,
+ * checking function parameters, catch-clause variables, and block/statement
+ * declarations at each scope boundary. Hoisting/order subtleties are ignored
+ * (v1 heuristic; false-negatives bias toward "shadowed", i.e. fewer findings).
+ */
+export function isShadowed(name, id) {
+    let cur = id.parent;
+    while (cur !== undefined) {
+        if (ts.isFunctionLike(cur)) {
+            for (const param of cur.parameters) {
+                if (param.name.getText() === name)
+                    return true;
+            }
+            const body = cur.body;
+            if (body !== undefined && ts.isBlock(body) && declaresInBlock(body, name))
+                return true;
+        }
+        else if (ts.isBlock(cur) || ts.isSourceFile(cur) || ts.isModuleBlock(cur)) {
+            if (declaresInBlock(cur, name))
+                return true;
+        }
+        else if (ts.isCatchClause(cur)) {
+            if (cur.variableDeclaration !== undefined && cur.variableDeclaration.name.getText() === name) {
+                return true;
+            }
+        }
+        cur = cur.parent;
+    }
+    return false;
+}
+/**
+ * stringyValue/numberyValue 用的严格遮蔽判定（round-16）：与 {@link isShadowed}
+ * 的区别是**不**把 SourceFile/ModuleBlock 的同名声明当遮蔽——模块级顶层引用自己
+ * 的 const 是 stringy 求值的合法主路径（`const url='/etc'` + 顶层 `f(url)`），
+ * 判遮蔽会毁掉全部顶层常量解析。只认：函数参数、函数体块声明、任意块声明、
+ * catch 子句变量（形参遮蔽误报的实证场景全部落在这些层）。
+ */
+export function isShadowedForStringy(name, id) {
+    let cur = id.parent;
+    while (cur !== undefined) {
+        if (ts.isFunctionLike(cur)) {
+            if (cur.parameters.some(p => p.name.getText() === name))
+                return true;
+            const body = cur.body;
+            if (body !== undefined && ts.isBlock(body) && declaresInBlock(body, name))
+                return true;
+        }
+        else if (ts.isBlock(cur)) {
+            if (declaresInBlock(cur, name))
+                return true;
+        }
+        else if (ts.isCatchClause(cur)) {
+            if (cur.variableDeclaration !== undefined && cur.variableDeclaration.name.getText() === name) {
+                return true;
+            }
+        }
+        cur = cur.parent;
+    }
+    return false;
+}
+/** 1-based line of a node in its source file. */
+export function lineOf(sf, node) {
+    return sf.getLineAndCharacterOfPosition(node.getStart(sf)).line + 1;
+}

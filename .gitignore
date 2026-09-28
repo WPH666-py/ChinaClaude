@@ -1,0 +1,22 @@
+node_modules/
+dist/
+target/
+*.log
+.DS_Store
+
+# Acquired during the blocking-point investigation; large and reproducible.
+_probe/package/
+_toolchain/
+
+# Staged by scripts/prepare-sidecar.mjs (~330 MB: node.exe + claude.exe + bridge/skills/vet).
+# Requires a claude.exe to copy: _probe/package/claude.exe (itself ignored above) or
+# CCCN_CLAUDE_BINARY. Set CCCN_SKIP_CLAUDE=1 to stage without it.
+packages/desktop/src-tauri/resources/
+
+# Third-party artifacts — never publish these.
+# claude.exe and the @anthropic-ai/claude-code tarballs are Anthropic's proprietary,
+# signed distribution: redistribute them only under Anthropic's own terms, never here.
+# The NSIS installer embeds claude.exe (see tauri.conf.json bundle.resources), so the
+# whole target/ tree stays local; build installers on your own machine.
+_probe/*.tgz
+

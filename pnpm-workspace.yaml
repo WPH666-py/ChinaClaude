@@ -1,0 +1,5 @@
+packages:
+  - 'packages/*'
+allowBuilds:
+  # esbuild ships its platform binary via a postinstall step; vite cannot build without it.
+  esbuild: true

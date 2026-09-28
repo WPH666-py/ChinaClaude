@@ -1,0 +1,16 @@
+# Route crates.io through a full domestic mirror.
+#
+# Two things are needed, not one: the index AND the download endpoint. The Tsinghua index
+# resolves crate downloads to static.crates.io, which is unreachable from this network
+# (SSL handshake fails). USTC mirrors both, so `dl` must be overridden explicitly.
+[source.crates-io]
+replace-with = 'ustc'
+
+[source.ustc]
+registry = 'sparse+https://mirrors.ustc.edu.cn/crates.io-index/'
+# Without this, downloads still point at static.crates.io and fail.
+dl = 'https://mirrors.ustc.edu.cn/crates.io/crates'
+
+[net]
+git-fetch-with-cli = true
+retry = 5

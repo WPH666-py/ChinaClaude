@@ -1,0 +1,1 @@
+{"default":{"identifier":"default","description":"Capabilities granted to the main window. The shell exposes exactly one command; all other traffic is plain HTTP to the local bridge, which needs no Tauri permission.","local":true,"windows":["main"],"permissions":["core:default"]}}

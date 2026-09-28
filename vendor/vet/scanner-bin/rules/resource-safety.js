@@ -1,0 +1,680 @@
+import ts from 'typescript';
+import { walk, numberyValue, stringyValue, lineOf } from '../ast.js';
+import { moduleBindings } from '../capability.js';
+/**
+ * R9 resource safety . Signals, capped at high (14.1:
+ * critical would short-circuit the LLM audit, which resource-class issues need):
+ *
+ * R9-1 (high): unbounded allocation literal (new Array(2**31) / Array(n) /
+ *   Array.from({length}) / Buffer.alloc(huge)); synchronous exit-less loop
+ *   while(true)/for(;;) (busy-wait wedges the event loop; module-top-level in
+ *   npm packages stalls the whole harness); child-process spawn inside such a
+ *   loop (fork-bomb pattern). A loop body with await is a likely resident
+ *   service loop, advisory info only.
+ * R9-2 (medium): nested-quantifier regex (ReDoS, (a+)+ style exponential
+ *   backtracking); recursion without any conditional branch (rough check).
+ * R9-3 (info/medium): in-loop += accumulation (possible O(n2) string),
+ *   in-loop map.set growth signal, in-loop Promise.all concurrency signal.
+ */
+const ALLOC_LIMIT = 100_000_000;
+// round-9（0.1.16 加固）：sync 变体同属 fork-bomb 面（while(1){ execSync() } 此前漏检）
+const SPAWN_CALLS = new Set(['spawn', 'spawnSync', 'exec', 'execSync', 'execFile', 'execFileSync', 'fork']);
+const SPAWN_NEWS = new Set(['Worker']);
+/**
+ * (a+)+ style ReDoS detection. round-5/6 重写（外部实测驱动）：
+ * - 旧正则把 (?:x)? 组首 '?' 修饰符误当量词 → 所有单可选组误报（线性复杂度）
+ * - 真指数回溯 = 组内顶层带量词（组可匹配变长）+ 组后紧跟量词：(a+)+、(?:\\d+)+
+ * - round-6：alternation 分支互斥（((?:[^']|'')*)）→ 线性，不报；
+ *   分支重叠（(a|aa)+：aa 以 a 开头）→ 指数回溯，报
+ */
+/** 位置字符是否被（奇数个）反斜杠转义：\( \) 是字面量括号，不参与组深度计数。 */
+function isEscapedCodePoint(pattern, idx) {
+    let bs = 0;
+    for (let k = idx - 1; k >= 0 && pattern[k] === '\\'; k--)
+        bs++;
+    return bs % 2 === 1;
+}
+/** R9 自分析工作预算（字符步数上限）：0.3.9（审查修复）——此前 findClose 对每个 '(' 全串
+ * 前扫、且 isEscapedCodePoint 逐位置回扫连续反斜杠，深嵌套/全反斜杠正则实测 O(n²)
+ * （64KB 嵌套 5.6s，文件内不可抢占 → 击穿宿主超时「R8-skip 恒先于 kill」的结构保证）。
+ * 预算保证最坏耗时上界；耗尽即保守返回（宁漏报不自伤）。 */
+const REDOS_WORK_BUDGET = 500_000;
+export function isRedosPattern(pattern) {
+    const n = pattern.length;
+    // 转义奇偶预计算（一次线性扫描）：等价于逐位置 isEscapedCodePoint，但不再是 O(n²)
+    const escaped = new Uint8Array(n);
+    {
+        let bs = 0;
+        for (let j = 0; j < n; j++) {
+            escaped[j] = bs % 2 === 1 ? 1 : 0;
+            if (pattern[j] === '\\')
+                bs++;
+            else
+                bs = 0;
+        }
+    }
+    // 一次线性扫描：括号配对表 + 每个组「顶层」是否含量词/alternation 的累积器
+    // （顶层 = 相对该组深度 0，嵌套组只更新最内层——与旧实现的 depth 语义一致）
+    const closeOf = new Int32Array(n).fill(-1);
+    const topQuant = new Map();
+    const topAlt = new Map();
+    const stack = [];
+    for (let j = 0; j < n; j++) {
+        if (escaped[j] === 1)
+            continue;
+        const ch = pattern[j];
+        if (ch === '(') {
+            stack.push({ open: j, quant: false, alt: false });
+            continue;
+        }
+        if (ch === ')') {
+            const g = stack.pop();
+            if (g === undefined)
+                continue;
+            closeOf[g.open] = j;
+            topQuant.set(g.open, g.quant);
+            topAlt.set(g.open, g.alt);
+            continue;
+        }
+        const top = stack[stack.length - 1];
+        if (top === undefined)
+            continue;
+        if (ch === '|') {
+            top.alt = true;
+            continue;
+        }
+        if (ch === '*' || ch === '+' || ch === '?') {
+            // 组前缀 (?: (?= (?! 的 '?' 不是量词（与旧实现 slice(2) 剥前缀同义）
+            if (ch === '?' && j === top.open + 1)
+                continue;
+            top.quant = true;
+        }
+    }
+    let used = 0;
+    for (let i = 0; i < n; i++) {
+        if (escaped[i] === 1 || pattern[i] !== '(')
+            continue;
+        const close = closeOf[i];
+        if (close === -1)
+            return false;
+        const after = pattern[close + 1];
+        // round-7（P3）：组后 '?'（(https?:)? 类）至多一次额外分支——回溯有界、最坏线性，
+        // 不是 (a+)+ 类指数回溯（指数要求组后 */+ 可重复叠加）。外部实测 dsh-wechat-mp
+        // markdown.js 的 /^(https?:)?\/\//i 常规 URL 探测误报 medium。
+        if (after !== '*' && after !== '+')
+            continue;
+        // 组内带量词 + 组后 */+：典型指数回溯
+        if (topQuant.get(i) === true)
+            return true;
+        // 组内 alternation：分支互斥 → 线性不报；分支重叠 → 指数回溯报
+        if (topAlt.get(i) === true) {
+            let body = pattern.slice(i + 1, close);
+            used += body.length;
+            if (used > REDOS_WORK_BUDGET)
+                return false;
+            if (body.startsWith('?:') || body.startsWith('?=') || body.startsWith('?!'))
+                body = body.slice(2);
+            if (hasAlternation(body) && !branchesDisjoint(body))
+                return true;
+        }
+    }
+    return false;
+}
+/** 组内顶层是否存在 alternation 分支（跳过嵌套括号区）。 */
+function hasAlternation(body) {
+    let depth = 0;
+    for (let j = 0; j < body.length; j++) {
+        const ch = body[j];
+        if (ch === '(' || ch === ')') {
+            if (isEscapedCodePoint(body, j))
+                continue;
+            if (ch === '(')
+                depth++;
+            else
+                depth--;
+            continue;
+        }
+        if (ch === '|' && depth === 0)
+            return true;
+    }
+    return false;
+}
+/**
+ * alternation 顶层分支两两互斥判定：每个分支取首字符集合（近似），
+ * 集合不相交 → 互斥（线性）。首字符支持：字面量、. \\d \\w \\s、
+ * 字符类 [...]（^ 否定类无法近似 → 保守视为不互斥）。无法分析 → 不互斥（保守报）。
+ */
+function branchesDisjoint(body) {
+    const branches = [];
+    let depth = 0;
+    let cur = '';
+    for (let j = 0; j < body.length; j++) {
+        const ch = body[j];
+        if (ch === '(' || ch === ')') {
+            if (isEscapedCodePoint(body, j))
+                continue;
+            if (ch === '(')
+                depth++;
+            else
+                depth--;
+        }
+        if (ch === '|' && depth === 0) {
+            branches.push(cur);
+            cur = '';
+            continue;
+        }
+        cur += ch;
+    }
+    branches.push(cur);
+    if (branches.length < 2)
+        return false;
+    const charSets = branches.map(firstCharSet);
+    for (let i = 0; i < charSets.length; i++) {
+        for (let j = i + 1; j < charSets.length; j++) {
+            if (charSets[i] === null || charSets[j] === null)
+                return false;
+            if (setsIntersect(charSets[i], charSets[j]))
+                return false;
+        }
+    }
+    return true;
+}
+/** 分支首 token 的字符集合近似：null = 无法分析（保守不互斥）。 */
+function firstCharSet(branch) {
+    const b = branch.trimStart();
+    if (b === '')
+        return new Set();
+    const c = b[0];
+    if (c === '\\') {
+        const esc = b[1];
+        if (esc === 'd')
+            return new Set(['0-9']);
+        if (esc === 'w')
+            return new Set(['0-9', 'A-Z', 'a-z', '_']);
+        if (esc === 's')
+            return new Set([' ', 't', 'n', 'r', 'f']);
+        if (esc === 'D' || esc === 'W' || esc === 'S')
+            return null;
+        return new Set([esc]);
+    }
+    if (c === '.')
+        return null;
+    if (c === '[') {
+        const close = b.indexOf(']');
+        if (close === -1)
+            return null;
+        const cls = b.slice(1, close);
+        if (cls.startsWith('^')) {
+            const neg = cls.slice(1);
+            // 单字符否定类 [^x]：与字面量 y 相交当且仅当 y === x（round-6：((?:[^']|'')*) 分支互斥）
+            if (neg.length === 1)
+                return { negated: true, char: neg };
+            return null; // 多字符否定类无法近似，保守
+        }
+        return new Set(cls.split(''));
+    }
+    if (c === '(' || c === '?')
+        return null;
+    return new Set([c]);
+}
+function setsIntersect(a, b) {
+    const an = a.negated;
+    const bn = b.negated;
+    if (an === true) {
+        const ch = a.char;
+        // [^x] 与集合 S 相交：否定类覆盖几乎所有字符，仅当 S 恰为 {x} 时才不相交
+        return !(b.size === 1 && b.has(ch));
+    }
+    if (bn === true)
+        return setsIntersect(b, a);
+    for (const x of a)
+        if (b.has(x))
+            return true;
+    return false;
+}
+function exitSignals(body) {
+    const sig = { hasBreak: false, hasReturn: false, hasThrow: false, hasAwait: false };
+    // round-7.2：带标签 break 的出口语义——`outer: for(;;) { for(...) { break outer } }` 跳出的是外层循环，
+    // 之前的 inInnerLoop 标记把它当内层 break 不算出口 → minified bundle 误报无出口循环。
+    // 规则：标签绑定在包裹当前循环的 labeled 语句上（是循环体祖先）→ 算本循环出口信号；
+    // 标签绑定在循环内部（`for(;;) { a: { break a } }`）→ 只跳出内部块，不算。
+    const loopAncestors = new Set();
+    for (let p = body.parent; p !== undefined; p = p.parent)
+        loopAncestors.add(p);
+    const visit = (n, inInnerLoop) => {
+        if (ts.isFunctionLike(n))
+            return; // nested functions don't affect this loop
+        if (ts.isBreakStatement(n)) {
+            if (!inInnerLoop) {
+                sig.hasBreak = true;
+            }
+            else if (n.label !== undefined) {
+                // 带标签 break：向上找标签绑定的 labeled 语句；若它包裹当前循环 → 本循环有出口
+                for (let p = n.parent; p !== undefined; p = p.parent) {
+                    if (ts.isLabeledStatement(p) && p.label.text === n.label.text) {
+                        if (loopAncestors.has(p))
+                            sig.hasBreak = true;
+                        break;
+                    }
+                }
+            }
+        }
+        if (ts.isReturnStatement(n))
+            sig.hasReturn = true;
+        if (ts.isThrowStatement(n))
+            sig.hasThrow = true;
+        if (ts.isAwaitExpression(n))
+            sig.hasAwait = true;
+        const nested = inInnerLoop || (ts.isIterationStatement(n, false) && n !== body);
+        ts.forEachChild(n, child => visit(child, nested));
+    };
+    visit(body, false);
+    return sig;
+}
+/** Collect spawn-ish call/new nodes in a body tree (skipping nested functions).
+ * round-16：绑定门控——只计「确实来自 child_process / worker_threads 的调用」：
+ * 此前任意同名本地函数/对象方法（while(true){ spawn(n) } 粒子生成函数、obj.spawn()）
+ * 都进 fork-bomb 计数 → high FP（capability 层 0.1.21 已修同款问题，R9 未同步）。
+ * 标识符形态要求名字在绑定集（cpRefs/workerRefs）；属性形态递归校验根（与 R20 isCpBase 同口径）。 */
+function collectSpawns(body, out, cpRefs, workerRefs) {
+    const cpKnown = (base) => {
+        if (ts.isIdentifier(base))
+            return cpRefs.has(base.text);
+        if (ts.isCallExpression(base)) {
+            const c = base.expression;
+            if (ts.isIdentifier(c) && c.text === 'require' && base.arguments.length > 0) {
+                const spec = stringyValue(base.arguments[0], base.getSourceFile());
+                return spec !== undefined && spec.text.replace(/^node:/, '') === 'child_process';
+            }
+        }
+        if (ts.isPropertyAccessExpression(base))
+            return cpKnown(base.expression);
+        return false;
+    };
+    const visit = (n) => {
+        if (ts.isFunctionLike(n))
+            return;
+        if (ts.isCallExpression(n)) {
+            const callee = n.expression;
+            if (ts.isIdentifier(callee)) {
+                if (SPAWN_CALLS.has(callee.text) && cpRefs.has(callee.text))
+                    out.push(n);
+            }
+            else if (ts.isPropertyAccessExpression(callee)) {
+                if (SPAWN_CALLS.has(callee.name.text) && cpKnown(callee.expression))
+                    out.push(n);
+            }
+        }
+        else if (ts.isNewExpression(n)
+            && ts.isIdentifier(n.expression) && SPAWN_NEWS.has(n.expression.text)
+            && workerRefs.has(n.expression.text)) {
+            out.push(n);
+        }
+        ts.forEachChild(n, visit);
+    };
+    visit(body);
+}
+/**
+ * 条件表达式是否静态恒真。识别范围（保守，避免误报）：
+ * - true / 非零数值字面量（while(1) 是压缩混淆最常见的死循环形态，round-15 补漏）
+ * - 括号包裹、一元非（!0 → true，minified 惯用）
+ * 不做表达式求值（不追变量绑定，防误报；退出信号检测兜底其余形态）。
+ */
+function isStaticallyTrue(expr) {
+    if (expr.kind === ts.SyntaxKind.TrueKeyword)
+        return true;
+    if (ts.isParenthesizedExpression(expr))
+        return isStaticallyTrue(expr.expression);
+    // 数值字面量：非零即恒真（while(1) / for(;1;))——数值解析失败按不恒真
+    if (ts.isNumericLiteral(expr)) {
+        const v = Number(expr.text.replace(/_/g, ''));
+        return Number.isFinite(v) && v !== 0;
+    }
+    // 一元非：!0 / !0n —— 内层是 falsy 字面量则恒真（minified 惯用 while(!0)）
+    if (ts.isPrefixUnaryExpression(expr) && expr.operator === ts.SyntaxKind.ExclamationToken) {
+        const inner = expr.operand;
+        if (ts.isNumericLiteral(inner)) {
+            const v = Number(inner.text.replace(/_/g, ''));
+            return Number.isFinite(v) && v === 0;
+        }
+        if (inner.kind === ts.SyntaxKind.FalseKeyword || inner.kind === ts.SyntaxKind.NullKeyword)
+            return true;
+    }
+    return false;
+}
+/** 无出口循环：while(true/1/!0) 或 for(;;) / for(;1;)（do-while 同判，round-15 补漏）。 */
+function unboundedLoop(n) {
+    // for(;;)：三处全空。for(;1;)：只有 condition 且恒真（无 init/inc 即不可能靠自增跳出）
+    if (ts.isForStatement(n)) {
+        if (n.initializer === undefined && n.incrementor === undefined) {
+            if (n.condition === undefined || isStaticallyTrue(n.condition))
+                return n;
+        }
+        return undefined;
+    }
+    if (ts.isWhileStatement(n) && isStaticallyTrue(n.expression))
+        return n;
+    if (ts.isDoStatement(n) && isStaticallyTrue(n.expression))
+        return n;
+    return undefined;
+}
+/** R9-1 allocation checks: new Array / Array() / Array.from({length}) / Buffer.alloc*. */
+function allocFinding(ruleText, n, sf, amount) {
+    // 非有限值防护：Infinity（如 2 ** 1e308）≥ LIMIT 仍正确告警；NaN 会打印 "NaN ≥ ..." 噪音 finding，
+    // 直接跳过（0 幂等边界值不产生无意义告警）。
+    if (Number.isNaN(amount) || amount < ALLOC_LIMIT)
+        return undefined;
+    return {
+        rule: 'R9',
+        severity: 'high',
+        confidence: 'certain',
+        message: '无界分配：' + ruleText + '（静态值 ' + amount + ' ≥ ' + ALLOC_LIMIT + '，可致 OOM）',
+        evidence: n.getText(sf).slice(0, 200),
+        line: lineOf(sf, n),
+    };
+}
+function checkArrayAlloc(n, sf, found) {
+    const callee = n.expression;
+    // Array(n) / new Array(n)
+    if (ts.isIdentifier(callee)) {
+        if (callee.text === 'Array') {
+            const arg = n.arguments?.[0];
+            if (arg !== undefined) {
+                const v = numberyValue(arg, sf);
+                if (v !== undefined) {
+                    const f = allocFinding('Array(n) 巨大数组', n, sf, v);
+                    if (f !== undefined)
+                        found.push(f);
+                }
+            }
+        }
+        return;
+    }
+    if (!ts.isPropertyAccessExpression(callee) || !ts.isIdentifier(callee.expression))
+        return;
+    const base = callee.expression.text;
+    const method = callee.name.text;
+    // Buffer.alloc(n) / Buffer.allocUnsafe(n)
+    if (base === 'Buffer' && (method === 'alloc' || method === 'allocUnsafe')) {
+        const arg = n.arguments?.[0];
+        if (arg !== undefined) {
+            const v = numberyValue(arg, sf);
+            if (v !== undefined) {
+                const f = allocFinding('Buffer.' + method + '(n) 巨大缓冲', n, sf, v);
+                if (f !== undefined)
+                    found.push(f);
+            }
+        }
+        return;
+    }
+    // Array.from({ length: n })
+    if (base === 'Array' && method === 'from') {
+        const arg = n.arguments?.[0];
+        if (arg !== undefined && ts.isObjectLiteralExpression(arg)) {
+            for (const prop of arg.properties) {
+                if (ts.isPropertyAssignment(prop) && prop.name.getText(sf) === 'length') {
+                    const v = numberyValue(prop.initializer, sf);
+                    if (v !== undefined) {
+                        const f = allocFinding('Array.from({ length: n }) 巨大数组', n, sf, v);
+                        if (f !== undefined)
+                            found.push(f);
+                    }
+                }
+            }
+        }
+    }
+}
+// ---------------------------------------------------------------------------
+// R9-2: ReDoS nested quantifiers + recursion without a conditional branch
+// ---------------------------------------------------------------------------
+function checkRedosPattern(pattern, n, sf, found) {
+    if (isRedosPattern(pattern)) {
+        found.push({
+            rule: 'R9',
+            severity: 'medium',
+            confidence: 'likely',
+            message: '正则嵌套量词（ReDoS 风险：(a+)+ 类指数回溯）',
+            evidence: n.getText(sf).slice(0, 200),
+            line: lineOf(sf, n),
+        });
+    }
+}
+/** Regex literal /pattern/flags and new RegExp('pattern'). */
+function checkReDoS(sf, found) {
+    walk(sf, n => {
+        if (ts.isRegularExpressionLiteral(n)) {
+            const text = n.text;
+            const lastSlash = text.lastIndexOf('/');
+            if (text.startsWith('/') && lastSlash > 0) {
+                checkRedosPattern(text.slice(1, lastSlash), n, sf, found);
+            }
+            return;
+        }
+        if ((ts.isCallExpression(n) || ts.isNewExpression(n)) && ts.isIdentifier(n.expression) && n.expression.text === 'RegExp') {
+            const arg = n.arguments?.[0];
+            if (arg !== undefined) {
+                const sv = stringyValue(arg, sf);
+                if (sv !== undefined)
+                    checkRedosPattern(sv.text, n, sf, found);
+            }
+        }
+    });
+}
+/** Function name: declared name, or the const binding of an arrow/expression. */
+function functionName(fn, sf) {
+    if (fn.name !== undefined)
+        return fn.name.text;
+    const parent = fn.parent;
+    if (parent !== undefined && ts.isVariableDeclaration(parent) && ts.isIdentifier(parent.name))
+        return parent.name.text;
+    return undefined;
+}
+/**
+ * Rough recursion check: direct self-call with no if/switch/ternary/&&/|| in the body tree.
+ * round-7（P4d）：集合遍历形态（for-of/for-in）与带条件循环（while(cond)/do/for(;cond;)）
+ * 是常见终止机制——自调用在其内不做「无终止」粗判（外部实测 dsh-tui 的 zeroLayoutRecursive
+ * yoga-layout 树遍历误报；while(true)/for(;;) 保持判定）。
+ */
+function checkRecursion(sf, found) {
+    walk(sf, n => {
+        if (!ts.isFunctionDeclaration(n) && !ts.isFunctionExpression(n) && !ts.isArrowFunction(n))
+            return;
+        const name = functionName(n, sf);
+        if (name === undefined || name === '')
+            return;
+        const body = n.body;
+        if (body === undefined)
+            return;
+        let selfCall = false;
+        let selfCallBounded = false;
+        let hasCondition = false;
+        const visit = (node, bounded) => {
+            if (node !== n && ts.isFunctionLike(node))
+                return;
+            if (ts.isCallExpression(node) && ts.isIdentifier(node.expression) && node.expression.text === name) {
+                selfCall = true;
+                if (bounded)
+                    selfCallBounded = true;
+            }
+            if (ts.isIfStatement(node) || ts.isSwitchStatement(node) || ts.isConditionalExpression(node)
+                || (ts.isBinaryExpression(node)
+                    && (node.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken || node.operatorToken.kind === ts.SyntaxKind.BarBarToken))) {
+                hasCondition = true;
+            }
+            let next = bounded;
+            if (!next) {
+                if (ts.isForOfStatement(node) || ts.isForInStatement(node))
+                    next = true;
+                else if (ts.isWhileStatement(node) && node.expression.kind !== ts.SyntaxKind.TrueKeyword)
+                    next = true;
+                else if (ts.isDoStatement(node))
+                    next = true;
+                else if (ts.isForStatement(node) && node.condition !== undefined)
+                    next = true;
+            }
+            ts.forEachChild(node, child => visit(child, next));
+        };
+        visit(body, false);
+        if (selfCall && !selfCallBounded && !hasCondition) {
+            found.push({
+                rule: 'R9',
+                severity: 'medium',
+                confidence: 'likely',
+                message: '递归无终止条件粗检：' + name + ' 直接自调用且函数体内无条件分支',
+                evidence: n.getText(sf).slice(0, 200),
+                line: lineOf(sf, n),
+            });
+        }
+    });
+}
+// ---------------------------------------------------------------------------
+// R9-3: in-loop accumulation / growth / concurrency signals (advisory)
+// ---------------------------------------------------------------------------
+/** 右侧表达式是否算术（数值累加而非字符串拼接）：数字字面量或算术/位运算表达式。 */
+function isArithmeticRhs(expr) {
+    if (ts.isNumericLiteral(expr))
+        return true;
+    if (!ts.isBinaryExpression(expr))
+        return false;
+    switch (expr.operatorToken.kind) {
+        case ts.SyntaxKind.AsteriskToken:
+        case ts.SyntaxKind.SlashToken:
+        case ts.SyntaxKind.PercentToken:
+        case ts.SyntaxKind.AsteriskAsteriskToken:
+        case ts.SyntaxKind.LessThanLessThanToken:
+        case ts.SyntaxKind.GreaterThanGreaterThanToken:
+        case ts.SyntaxKind.AmpersandToken:
+        case ts.SyntaxKind.BarToken:
+        case ts.SyntaxKind.CaretToken:
+            return true;
+        default:
+            return false;
+    }
+}
+function isAnyLoop(n) {
+    return ts.isForStatement(n) || ts.isWhileStatement(n) || ts.isDoStatement(n)
+        || ts.isForInStatement(n) || ts.isForOfStatement(n);
+}
+/**
+ * R9-3 有界性判定（D30：真实插件误报修复）：for-of/for-in 遍历的是显式集合/对象
+ * （`for (const p of registry.plugins)`），循环次数受集合大小约束，map.set/+=/Promise.all
+ * 的增长上界 = 集合大小，不是「无界增长信号」，不报。只有 while/do/for(;;) 这类潜在
+ * 无界循环（次数不由既有集合决定）才保留信号。
+ */
+function isBoundedIteration(n) {
+    return ts.isForInStatement(n) || ts.isForOfStatement(n);
+}
+function checkLoopBodyPatterns(sf, found) {
+    walk(sf, n => {
+        if (!isAnyLoop(n))
+            return;
+        // D30：for-of/for-in 有界遍历 → 增长受集合大小约束，跳过 R9-3 全部信号
+        if (isBoundedIteration(n))
+            return;
+        const body = n.statement;
+        const visit = (node) => {
+            if (ts.isFunctionLike(node))
+                return;
+            if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.PlusEqualsToken) {
+                // 右侧是算术表达式（total += w * coef 类）→ 数值累加，非字符串拼接，不报（自扫降噪）
+                if (isArithmeticRhs(node.right))
+                    return;
+                found.push({
+                    rule: 'R9',
+                    severity: 'info',
+                    confidence: 'heuristic',
+                    message: '循环内 += 累加（字符串拼接可能 O(n²)）',
+                    evidence: node.getText(sf).slice(0, 200),
+                    line: lineOf(sf, node),
+                });
+                return;
+            }
+            if (ts.isCallExpression(node)) {
+                const callee = node.expression;
+                if (ts.isPropertyAccessExpression(callee) && callee.name.text === 'set' && ts.isIdentifier(callee.expression)) {
+                    found.push({
+                        rule: 'R9',
+                        severity: 'medium',
+                        confidence: 'likely',
+                        message: '循环内集合写入 map.set（无界增长信号）',
+                        evidence: node.getText(sf).slice(0, 200),
+                        line: lineOf(sf, node),
+                    });
+                    return;
+                }
+                if (ts.isPropertyAccessExpression(callee) && callee.name.text === 'all'
+                    && ts.isIdentifier(callee.expression) && callee.expression.text === 'Promise') {
+                    found.push({
+                        rule: 'R9',
+                        severity: 'info',
+                        confidence: 'heuristic',
+                        message: '循环内 Promise.all（无界并发信号）',
+                        evidence: node.getText(sf).slice(0, 200),
+                        line: lineOf(sf, node),
+                    });
+                }
+            }
+            ts.forEachChild(node, visit);
+        };
+        visit(body);
+    });
+}
+export function run(sf, _ctx) {
+    const found = [];
+    // round-16：fork-bomb / Worker 计数绑定集（moduleBindings 已含解构/别名/promisify/内嵌形态）
+    const { cpRefs, workerRefs } = moduleBindings(sf);
+    walk(sf, n => {
+        if (ts.isCallExpression(n))
+            checkArrayAlloc(n, sf, found);
+        if (ts.isNewExpression(n))
+            checkArrayAlloc(n, sf, found);
+        const loop = unboundedLoop(n);
+        if (loop === undefined)
+            return;
+        const body = loop.statement;
+        const sig = exitSignals(body);
+        if (sig.hasAwait) {
+            found.push({
+                rule: 'R9',
+                severity: 'info',
+                confidence: 'heuristic',
+                message: '无出口常驻循环（含 await，可能是合法服务循环；交由 LLM 审计复核上下文）',
+                evidence: loop.getText(sf).slice(0, 200),
+                line: lineOf(sf, loop),
+            });
+            return;
+        }
+        if (!sig.hasBreak && !sig.hasReturn && !sig.hasThrow) {
+            // generic（通用/官方代码，含 minified bundle）：死循环是风险提示 → medium；
+            // bin 入口文件（round-7：CLI 脚本独立运行，忙等是应用自身问题）同样 medium；
+            // DSH 插件包（plugin）保持 high（插件死循环是 DoS 逃逸面）
+            const generic = _ctx.request.targetKind === 'generic' || _ctx.cliFiles?.has(sf.fileName) === true;
+            found.push({
+                rule: 'R9',
+                severity: generic ? 'medium' : 'high',
+                confidence: 'certain',
+                message: generic
+                    ? '无出口同步循环（死循环/忙等：无 break/return/throw/await；minified bundle 可能误判）'
+                    : '无出口同步循环（死循环/忙等：无 break/return/throw/await，可卡死宿主事件循环）',
+                evidence: loop.getText(sf).slice(0, 200),
+                line: lineOf(sf, loop),
+            });
+            const spawns = [];
+            collectSpawns(body, spawns, cpRefs, workerRefs);
+            for (const s of spawns) {
+                found.push({
+                    rule: 'R9',
+                    severity: 'high',
+                    confidence: 'likely',
+                    message: '无出口循环内启动子进程/worker（fork 炸弹模式）',
+                    evidence: s.getText(sf).slice(0, 200),
+                    line: lineOf(sf, s),
+                });
+            }
+        }
+    });
+    checkReDoS(sf, found);
+    checkRecursion(sf, found);
+    checkLoopBodyPatterns(sf, found);
+    return found;
+}

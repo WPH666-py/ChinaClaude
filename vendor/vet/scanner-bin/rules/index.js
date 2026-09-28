@@ -1,0 +1,38 @@
+import ts from 'typescript';
+import * as constructorChain from './constructor-chain.js';
+import * as dynamicExec from './dynamic-exec.js';
+import * as processDirect from './process-direct.js';
+import * as hostCapture from './host-capture.js';
+import * as ctxVerbs from './ctx-verbs.js';
+import * as stringHeuristics from './string-heuristics.js';
+import * as secrets from './secrets.js';
+import * as resourceSafety from './resource-safety.js';
+import * as destructiveOps from './destructive-ops.js';
+import * as networkExfil from './network-exfil.js';
+import * as dynamicTargets from './dynamic-targets.js';
+import * as shellExec from './shell-exec.js';
+/** v1 rule registry, ordered by severity priority. */
+export const RULES = [
+    { id: 'R1', run: constructorChain.run },
+    { id: 'R2', run: dynamicExec.run },
+    { id: 'R3', run: processDirect.run },
+    { id: 'R4', run: hostCapture.run },
+    { id: 'R5', run: ctxVerbs.run },
+    { id: 'R6', run: stringHeuristics.run },
+    { id: 'R7', run: secrets.run },
+    { id: 'R9', run: resourceSafety.run },
+    { id: 'R11', run: destructiveOps.run },
+    { id: 'R13', run: networkExfil.run },
+    { id: 'R15', run: dynamicTargets.run },
+    { id: 'R20', run: shellExec.run },
+];
+/** Execute all enabled rules over one source file. */
+export function executeRules(sf, ctx) {
+    const out = [];
+    for (const rule of RULES) {
+        if (ctx.request.rules !== undefined && ctx.request.rules[rule.id] === false)
+            continue;
+        out.push(...rule.run(sf, ctx));
+    }
+    return out;
+}

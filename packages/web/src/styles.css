@@ -1,0 +1,1860 @@
+/*
+ * Design tokens, ported from the DSH/Harness design platform.
+ *
+ * The raw ramps and alias mappings below are taken from the upstream sheet
+ * (packages/client/ui-theme/src/styles/design-platform.css) so this client sits on the SAME
+ * token names the real desktop app uses. Values are copied verbatim rather than tinted, so a
+ * future swap to the upstream stylesheet is a drop-in.
+ *
+ * Only the dark theme is defined: the desktop shell always renders dark.
+ */
+
+:root {
+  color-scheme: dark;
+
+  /* ---------------------------------------------------------- static ramps -- */
+  --dsw-static-amber-400: rgb(247, 173, 49);
+  --dsw-static-amber-500: rgb(245, 158, 11);
+  --dsw-static-amber-600: rgb(221, 134, 41);
+  --dsw-static-amber-900: rgb(39, 36, 31);
+
+  --dsw-static-blue-900: rgb(14, 48, 116);
+
+  --dsw-static-deepseek-400: rgb(103, 158, 254);
+  --dsw-static-deepseek-450: rgb(86, 134, 254);
+  --dsw-static-deepseek-500: rgb(65, 118, 230);
+  --dsw-static-deepseek-800: rgb(52, 65, 91);
+
+  --dsw-static-green-400: rgb(78, 209, 126);
+  --dsw-static-green-500: rgb(34, 197, 94);
+  --dsw-static-green-900: rgb(35, 60, 44);
+
+  --dsw-static-red-400: rgb(242, 90, 90);
+  --dsw-static-red-500: rgb(239, 68, 68);
+
+  --dsw-static-neutral-550: rgb(101, 103, 107);
+  --dsw-static-neutral-600: rgb(84, 85, 87);
+  --dsw-static-neutral-700: rgb(60, 60, 61);
+  --dsw-static-neutral-800: rgb(41, 41, 41);
+  --dsw-static-neutral-850: rgb(33, 33, 35);
+
+  --dsw-static-neutral-bluish-50: rgb(249, 250, 251);
+  --dsw-static-neutral-bluish-100: rgb(235, 238, 242);
+  --dsw-static-neutral-bluish-200: rgb(225, 229, 238);
+  --dsw-static-neutral-bluish-300: rgb(207, 211, 214);
+  --dsw-static-neutral-bluish-400: rgb(173, 178, 184);
+  --dsw-static-neutral-bluish-500: rgb(151, 157, 166);
+  --dsw-static-neutral-bluish-600: rgb(129, 133, 140);
+  --dsw-static-neutral-bluish-750: rgb(67, 69, 74);
+  --dsw-static-neutral-bluish-800: rgb(53, 54, 56);
+  --dsw-static-neutral-bluish-850: rgb(44, 44, 46);
+  --dsw-static-neutral-bluish-875: rgb(35, 35, 36);
+  --dsw-static-neutral-bluish-900: rgb(27, 27, 28);
+  --dsw-static-neutral-bluish-950: rgb(21, 21, 23);
+  --dsw-static-neutral-bluish-1000: rgb(15, 17, 21);
+
+  /* ----------------------------------------------------- dark alias layer -- */
+  --dsw-alias-bg-base: var(--dsw-static-neutral-bluish-950);
+  --dsw-alias-bg-layer-1: var(--dsw-static-neutral-bluish-875);
+  --dsw-alias-bg-layer-2: var(--dsw-static-neutral-bluish-850);
+  --dsw-alias-bg-layer-3: var(--dsw-static-neutral-bluish-800);
+  --dsw-alias-bg-overlay: var(--dsw-static-neutral-bluish-700);
+  --dsw-alias-bg-skeleton: rgba(255, 255, 255, 0.08);
+
+  --dsw-alias-border-inverted: rgba(255, 255, 255, 0.06);
+  --dsw-alias-border-l1: rgba(255, 255, 255, 0.06);
+  --dsw-alias-border-l2: rgba(255, 255, 255, 0.12);
+  --dsw-alias-border-l2-darkmode-thin: rgba(255, 255, 255, 0.06);
+  --dsw-alias-border-l3: rgba(255, 255, 255, 0.16);
+  --dsw-alias-border-l4: rgba(255, 255, 255, 0.2);
+
+  --dsw-alias-button-elevated-fill: var(--dsw-static-neutral-bluish-750);
+  --dsw-alias-button-floating-fill: var(--dsw-static-neutral-bluish-850);
+  --dsw-alias-button-floating-hover: var(--dsw-static-neutral-bluish-800);
+  --dsw-alias-button-primary-fill: var(--dsw-static-neutral-bluish-50);
+  --dsw-alias-button-primary-hover: var(--dsw-static-neutral-bluish-100);
+  --dsw-alias-button-info-fill: var(--dsw-static-deepseek-400);
+  --dsw-alias-button-info-hover: var(--dsw-static-deepseek-500);
+
+  --dsw-alias-interactive-bg-active: rgba(255, 255, 255, 0.14);
+  --dsw-alias-interactive-bg-hover: rgba(255, 255, 255, 0.08);
+  --dsw-alias-interactive-bg-hover-solid: var(--dsw-static-neutral-bluish-800);
+  --dsw-alias-interactive-bg-hover-accent: rgba(255, 255, 255, 0.24);
+  --dsw-alias-interactive-bg-hover-danger: rgba(242, 90, 90, 0.15);
+
+  --dsw-alias-label-primary: var(--dsw-static-neutral-bluish-50);
+  --dsw-alias-label-primary-dimmed: var(--dsw-static-neutral-bluish-100);
+  --dsw-alias-label-primary-foreground: var(--dsw-static-neutral-bluish-1000);
+  --dsw-alias-label-primary-inverted: var(--dsw-static-neutral-bluish-800);
+  --dsw-alias-label-primary-bluish: var(--dsw-static-neutral-bluish-50);
+  --dsw-alias-label-secondary: var(--dsw-static-neutral-bluish-300);
+  --dsw-alias-label-tertiary: var(--dsw-static-neutral-bluish-400);
+  --dsw-alias-label-caption: var(--dsw-static-neutral-bluish-600);
+  --dsw-alias-label-dimmed: var(--dsw-static-neutral-bluish-750);
+
+  --dsw-alias-link: var(--dsw-static-deepseek-400);
+
+  --dsw-alias-markdown-code-block: var(--dsw-static-neutral-bluish-900);
+  --dsw-alias-markdown-code-block-banner: var(--dsw-static-neutral-bluish-850);
+  --dsw-alias-markdown-inline-code: var(--dsw-static-neutral-800);
+  --dsw-alias-markdown-tag: var(--dsw-static-neutral-bluish-850);
+
+  --dsw-alias-scrollbar-bg-l1: var(--dsw-static-neutral-700);
+  --dsw-alias-scrollbar-bg-l2: var(--dsw-static-neutral-600);
+  --dsw-alias-scrollbar-hover-l1: var(--dsw-static-neutral-600);
+  --dsw-alias-scrollbar-hover-l2: var(--dsw-static-neutral-550);
+
+  --dsw-alias-state-business-primary: var(--dsw-static-deepseek-400);
+  --dsw-alias-state-business-tertiary: var(--dsw-static-deepseek-800);
+  --dsw-alias-state-error-primary: var(--dsw-static-red-400);
+  --dsw-alias-state-error-secondary: var(--dsw-static-red-400);
+  --dsw-alias-state-success-primary: var(--dsw-static-green-500);
+  --dsw-alias-state-success-secondary: var(--dsw-static-green-400);
+  --dsw-alias-state-success-tertiary: var(--dsw-static-green-900);
+  --dsw-alias-state-warn-primary: var(--dsw-static-amber-500);
+  --dsw-alias-state-warn-secondary: var(--dsw-static-amber-400);
+  --dsw-alias-state-warn-label: var(--dsw-static-amber-600);
+  --dsw-alias-state-warn-tertiary: var(--dsw-static-amber-900);
+
+  --dsw-alias-toast-bg: var(--dsw-static-neutral-bluish-750);
+  --dsw-alias-tooltip-bg: var(--dsw-static-neutral-bluish-750);
+
+  /* ----------------------------------------------------------- specific -- */
+  --dsw-specific-bubble: var(--dsw-static-neutral-bluish-850);
+  --dsw-specific-bubble-highlight: var(--dsw-static-neutral-bluish-750);
+  --dsw-specific-input-major: var(--dsw-static-neutral-bluish-850);
+  --dsw-specific-sidebar-fill: var(--dsw-static-neutral-bluish-900);
+  --dsw-specific-sidebar-nav-item-hover: var(--dsw-static-neutral-bluish-850);
+  --dsw-specific-sidebar-nav-item-active: var(--dsw-static-neutral-bluish-750);
+  --dsw-specific-sidebar-nav-item-active-accent: var(--dsw-static-neutral-bluish-800);
+  --dsw-specific-menu: var(--dsw-alias-bg-layer-3);
+  --dsw-specific-selector: var(--dsw-static-neutral-bluish-800);
+  --dsw-specific-tip: var(--dsw-static-neutral-bluish-800);
+
+  --dsw-elevation-stroke-color: var(--dsw-alias-border-l2);
+  --dsw-elevation-soft: 0 2px 8px rgba(0, 0, 0, 0.28);
+
+  /* --------------------------------------------------------------- system -- */
+  --ds-ease-in-out: cubic-bezier(0.4, 0, 0.2, 1);
+  --ds-transition-duration-slow: 240ms;
+
+  --dsw-font-family: 'Inter', 'Segoe UI', system-ui, -apple-system, 'Microsoft YaHei', sans-serif;
+  --dsw-font-family-code: 'JetBrains Mono', 'Cascadia Mono', Consolas, 'Courier New', monospace;
+
+  /* Layout axes shared by the shell and the components. */
+  --dsh-sidebar-width: 264px;
+  --dsh-sidebar-inline-padding: 12px;
+  --dsh-chat-content-width: 748px;
+  --dsh-composer-card-max-width: 748px;
+  --dsh-composer-side-clearance: 32px;
+  --dsh-content-font-size: 14px;
+  --dsh-content-font-size-secondary: 13px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background: var(--dsw-alias-bg-base);
+  color: var(--dsw-alias-label-primary);
+  font-family: var(--dsw-font-family);
+  font-size: 14px;
+  line-height: 22px;
+  -webkit-font-smoothing: antialiased;
+  overflow: hidden;
+}
+
+button {
+  padding: 0;
+  border: none;
+  background: none;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+button:disabled {
+  cursor: not-allowed;
+}
+
+input,
+textarea {
+  font: inherit;
+  color: inherit;
+}
+
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--dsw-alias-scrollbar-bg-l2);
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--dsw-alias-scrollbar-hover-l2);
+}
+
+/* ============================================================== app frame == */
+
+.frame {
+  display: grid;
+  grid-template-columns: var(--dsh-sidebar-width) minmax(0, 1fr);
+  height: 100%;
+  overflow: hidden;
+  background: var(--dsw-alias-bg-base);
+}
+
+/* Collapsed rail: the sidebar column shrinks to an icon strip. */
+.frame--rail {
+  grid-template-columns: 0 minmax(0, 1fr);
+}
+
+.sidebarCol {
+  min-width: 0;
+  overflow: hidden;
+  background: var(--dsw-specific-sidebar-fill);
+  border-right: 0.5px solid var(--dsw-alias-border-l3);
+}
+
+/* Collapsed rail hides the whole column: the toggle lives inside it, so collapse is undone
+   from the same control that is briefly hidden — the title bar keeps it reachable. */
+.frame--rail .sidebarCol {
+  border-right: none;
+}
+
+.centerCol {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  overflow: hidden;
+}
+
+/* ================================================================ sidebar == */
+
+.sidebar {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  padding: 6px var(--dsh-sidebar-inline-padding);
+  color: var(--dsw-alias-label-primary);
+}
+
+/* Logo row (figma pad 4/8/4/8, 60px tall). */
+.sidebar__logoRow {
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  height: 60px;
+  padding: 8px 0 8px 4px;
+  margin-bottom: 8px;
+  overflow: hidden;
+}
+
+.brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  height: 24px;
+  min-width: 0;
+}
+
+.brand__mark {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 7px;
+  background: var(--dsw-alias-state-business-primary);
+  color: #fff;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.brand__name {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  height: 24px;
+  font-size: 18px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  line-height: 24px;
+}
+
+.brand__version {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  height: 10px;
+  padding: 0 3px;
+  border-radius: 2px;
+  background: var(--dsw-alias-label-primary);
+  color: var(--dsw-alias-label-primary-inverted);
+  font-family: var(--dsw-font-family-code);
+  font-size: 6px;
+  font-weight: 500;
+  line-height: 10px;
+}
+
+.iconButton {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  color: var(--dsw-alias-label-secondary);
+}
+
+.iconButton:hover {
+  background: var(--dsw-alias-interactive-bg-hover);
+}
+
+/* New Session: 38px bar, 12px radius, hairline stroke (figma 133:7634). */
+.newSession {
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 38px;
+  padding: 8px 16px;
+  margin: 0 2px 8px;
+  border: 0.5px solid var(--dsw-alias-border-l3);
+  border-radius: 12px;
+  background: var(--dsw-alias-button-elevated-fill);
+  color: var(--dsw-alias-label-primary);
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 22px;
+  overflow: hidden;
+}
+
+.newSession:hover:not(:disabled) {
+  background: var(--dsw-alias-button-floating-hover);
+}
+
+.newSession:disabled {
+  opacity: 0.5;
+}
+
+/* Nav rows (figma: 36px min height, 8px radius, 7/8 padding). */
+.panelList {
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 8px;
+}
+
+.panelRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 36px;
+  padding: 7px 8px;
+  border-radius: 8px;
+  color: var(--dsw-alias-label-secondary);
+  line-height: 22px;
+  text-align: left;
+}
+
+.panelRow:hover {
+  background: var(--dsw-alias-interactive-bg-hover);
+}
+
+.panelRow--active {
+  background: var(--dsw-alias-interactive-bg-active);
+  color: var(--dsw-alias-label-primary);
+  font-weight: 500;
+}
+
+.panelRow__title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Search / toolbar strip. */
+.sectionHead {
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  padding: 4px 8px 6px;
+}
+
+.sectionHead__label {
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+}
+
+.sectionHead__actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.tinyButton {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
+  color: var(--dsw-alias-label-tertiary);
+}
+
+.tinyButton:hover {
+  background: var(--dsw-alias-interactive-bg-hover);
+  color: var(--dsw-alias-label-secondary);
+}
+
+/*
+ * Text-sized tiny button, for row actions that need a word ("继续对话", "导出 MD") rather than an
+ * icon. The base class is a fixed 24x24 icon target, so width and padding are released here.
+ */
+.tinyButton--text {
+  width: auto;
+  min-width: 24px;
+  padding: 0 8px;
+  font-size: 11.5px;
+  white-space: nowrap;
+}
+
+/* The one affirmative action in a row, so it reads as the default choice. */
+.tinyButton--primary {
+  width: auto;
+  min-width: 24px;
+  padding: 0 8px;
+  background: var(--dsw-alias-button-primary-fill);
+  color: var(--dsw-alias-label-primary-foreground);
+  font-size: 11.5px;
+  white-space: nowrap;
+}
+
+.tinyButton--primary:hover {
+  background: var(--dsw-alias-button-primary-hover);
+  color: var(--dsw-alias-label-primary-foreground);
+}
+
+.tinyButton--primary:disabled {
+  opacity: 0.45;
+}
+
+/* Scroll region: the nested scrollbar sits at the sidebar edge, so the inset is
+   cancelled here and restored inside the rows. */
+.region {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+  margin: 0 calc(-1 * var(--dsh-sidebar-inline-padding)) 0 -4px;
+  padding-left: 4px;
+  overflow: hidden;
+}
+
+.sessionList {
+  flex: 1;
+  min-height: 0;
+  padding: 0 var(--dsh-sidebar-inline-padding) 8px 4px;
+  overflow-y: auto;
+}
+
+.sessionItem {
+  display: block;
+  width: 100%;
+  padding: 7px 8px;
+  border-radius: 8px;
+  text-align: left;
+}
+
+.sessionItem:hover {
+  background: var(--dsw-specific-sidebar-nav-item-hover);
+}
+
+.sessionItem--active {
+  background: var(--dsw-specific-sidebar-nav-item-active);
+}
+
+.sessionItem__top {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+}
+
+.sessionItem__title {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--dsw-alias-label-primary);
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sessionItem__meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 2px;
+  padding-left: 13px;
+  color: var(--dsw-alias-label-caption);
+  font-size: 12px;
+  line-height: 16px;
+}
+
+.dot {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+}
+
+.dot--ready {
+  background: var(--dsw-alias-state-success-primary);
+}
+.dot--busy {
+  background: var(--dsw-alias-state-warn-primary);
+}
+.dot--awaiting_approval {
+  background: var(--dsw-alias-state-warn-primary);
+}
+.dot--starting {
+  background: var(--dsw-alias-state-business-primary);
+}
+.dot--closed,
+.dot--failed {
+  background: var(--dsw-alias-state-error-primary);
+}
+
+/* Footer: usage card + settings seat. */
+.footArea {
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  margin-top: 4px;
+}
+
+.usageCard {
+  padding: 10px 12px;
+  margin-bottom: 6px;
+  border: 0.5px solid var(--dsw-alias-border-l2);
+  border-radius: 12px;
+  background: var(--dsw-alias-bg-layer-1);
+}
+
+.usageCard__row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.usageCard__label {
+  color: var(--dsw-alias-label-secondary);
+  font-size: 12px;
+}
+
+.usageCard__value {
+  color: var(--dsw-alias-label-primary);
+  font-family: var(--dsw-font-family-code);
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.usageCard__sub {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 5px;
+  color: var(--dsw-alias-label-caption);
+  font-size: 11.5px;
+}
+
+.usageCard__accent {
+  color: var(--dsw-alias-state-success-primary);
+}
+
+/* Cost sits under the token counts, separated by a hairline so the two readings do not merge. */
+.usageCard__row--cost {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 0.5px solid var(--dsw-alias-border-l2);
+}
+
+.usageCard__value--cost {
+  color: var(--dsw-alias-state-business-primary);
+}
+
+.usageCard__value--balance {
+  color: var(--dsw-alias-state-success-primary);
+}
+
+/* The vendor/model line and the balance row can both hold a lot of text, so they wrap instead of
+   overflowing the narrow sidebar. */
+.usageCard__sub--wrap {
+  flex-wrap: wrap;
+  line-height: 17px;
+}
+
+.usageCard__vendor {
+  color: var(--dsw-alias-label-secondary);
+}
+
+/* The model/provider line sits directly under the token counts, before any cost exists. */
+.usageCard__model {
+  margin-top: 3px;
+}
+
+.usageCard__refresh {
+  flex: none;
+  margin-left: auto;
+  padding: 2px 7px;
+  border: 0.5px solid var(--dsw-alias-border-l2);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--dsw-alias-label-caption);
+  font-size: 10.5px;
+  cursor: pointer;
+}
+
+.usageCard__refresh:hover:not(:disabled) {
+  background: var(--dsw-alias-interactive-bg-hover);
+  color: var(--dsw-alias-label-secondary);
+}
+
+.usageCard__refresh:disabled {
+  opacity: 0.5;
+}
+
+.settingsRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 36px;
+  padding: 7px 8px;
+  border-radius: 8px;
+  color: var(--dsw-alias-label-secondary);
+  font-size: 13px;
+  text-align: left;
+}
+
+.settingsRow:hover {
+  background: var(--dsw-alias-interactive-bg-hover);
+}
+
+/* ============================================================ center column == */
+
+.topBar {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 10px;
+  height: 48px;
+  padding: 0 16px;
+  border-bottom: 0.5px solid var(--dsw-alias-border-l1);
+}
+
+.topBar__title {
+  min-width: 0;
+  overflow: hidden;
+  font-size: 13px;
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.topBar__spacer {
+  flex: 1;
+}
+
+/* Segmented tabs (对话 / 轨迹). */
+.tabs {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px;
+  border-radius: 9px;
+  background: var(--dsw-alias-bg-layer-1);
+}
+
+.tab {
+  padding: 4px 12px;
+  border-radius: 7px;
+  color: var(--dsw-alias-label-secondary);
+  font-size: 12.5px;
+  font-weight: 500;
+}
+
+.tab:hover {
+  color: var(--dsw-alias-label-primary);
+}
+
+.tab--active {
+  background: var(--dsw-alias-bg-layer-3);
+  color: var(--dsw-alias-label-primary);
+}
+
+.tab:disabled {
+  opacity: 0.45;
+}
+
+/* Model / permission chips. */
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 26px;
+  padding: 0 8px;
+  border-radius: 8px;
+  color: var(--dsw-alias-label-secondary);
+  font-size: 12.5px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.chip:hover {
+  background: var(--dsw-alias-interactive-bg-hover);
+}
+
+.chip--static {
+  color: var(--dsw-alias-label-tertiary);
+  font-family: var(--dsw-font-family-code);
+  font-size: 11.5px;
+}
+
+.chip--static:hover {
+  background: none;
+}
+
+/* Attention chip: a turn is parked waiting on the user. */
+.chip--attention {
+  background: var(--dsw-alias-state-warn-tertiary);
+  color: var(--dsw-alias-state-warn-secondary);
+  font-weight: 600;
+}
+
+.chip--attention:hover {
+  background: var(--dsw-alias-state-warn-tertiary);
+}
+
+.chip__caret {
+  color: var(--dsw-alias-label-caption);
+  font-size: 9px;
+}
+
+/* Count badge inside a top-bar chip (e.g. the skill count). */
+.chip__count {
+  padding: 0 5px;
+  border-radius: 4px;
+  background: var(--dsw-alias-bg-layer-3);
+  color: var(--dsw-alias-label-tertiary);
+  font-family: var(--dsw-font-family-code);
+  font-size: 10px;
+}
+
+/* ============================================================== transcript == */
+
+.transcript {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  /* The bottom fade the composer sits on (upstream: owned by the chat scroller). */
+  mask-image: linear-gradient(to bottom, transparent 0, #000 14px, #000 calc(100% - 26px), transparent 100%);
+}
+
+.transcript__inner {
+  max-width: var(--dsh-chat-content-width);
+  margin: 0 auto;
+  padding: 20px 24px 8px;
+}
+
+.turnBlock {
+  margin-bottom: 18px;
+}
+
+/* User bubble: right-aligned, r22, bubble token (figma 659:38813). */
+.userRow {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 6px;
+  margin-bottom: 18px;
+}
+
+.userBubble {
+  max-width: min(calc(var(--dsh-chat-content-width) * 0.702), 82%);
+  padding: 10px 16px;
+  border-radius: 22px;
+  background: var(--dsw-specific-bubble);
+  color: var(--dsw-alias-label-primary);
+  font-size: var(--dsh-content-font-size);
+  line-height: 22px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* Assistant markdown block: no bubble, full column width. */
+.assistant {
+  color: var(--dsw-alias-label-primary);
+  font-size: var(--dsh-content-font-size);
+  line-height: 24px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.assistant p {
+  margin: 0 0 10px;
+}
+
+.assistant p:last-child {
+  margin-bottom: 0;
+}
+
+/* Reasoning disclosure row. */
+.reason {
+  margin-bottom: 10px;
+}
+
+.reason__head {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  max-width: 100%;
+  padding: 3px 6px 3px 0;
+  border-radius: 6px;
+  color: var(--dsw-alias-label-tertiary);
+  font-size: var(--dsh-content-font-size-secondary);
+  line-height: 20px;
+}
+
+.reason__head:hover {
+  color: var(--dsw-alias-label-secondary);
+}
+
+.reason__caret {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-right: 1.5px solid currentcolor;
+  border-bottom: 1.5px solid currentcolor;
+  opacity: 0.8;
+  transform: rotate(-45deg);
+  transition: transform 120ms ease;
+}
+
+.reason__caret--open {
+  transform: rotate(45deg);
+}
+
+.reason__summary {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.reason__body {
+  margin-top: 4px;
+  padding: 8px 12px;
+  border-left: 2px solid var(--dsw-alias-border-l3);
+  color: var(--dsw-alias-label-tertiary);
+  font-size: var(--dsh-content-font-size-secondary);
+  line-height: 22px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* Tool call card. */
+.tool {
+  margin-bottom: 10px;
+  border: 0.5px solid var(--dsw-alias-border-l2);
+  border-radius: 12px;
+  background: var(--dsw-alias-bg-layer-1);
+  overflow: hidden;
+}
+
+.tool--error {
+  border-color: var(--dsw-alias-state-error-primary);
+}
+
+.tool__head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 12px;
+  text-align: left;
+}
+
+.tool__head:hover {
+  background: var(--dsw-alias-interactive-bg-hover);
+}
+
+.tool__icon {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 5px;
+  background: var(--dsw-specific-selector);
+  color: var(--dsw-alias-label-secondary);
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.tool__name {
+  flex: none;
+  font-size: var(--dsh-content-font-size-secondary);
+  font-weight: 500;
+}
+
+.tool__summary {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--dsw-alias-label-tertiary);
+  font-family: var(--dsw-font-family-code);
+  font-size: 11.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tool__status {
+  flex: none;
+  margin-left: auto;
+  color: var(--dsw-alias-label-caption);
+  font-size: 11.5px;
+}
+
+.tool__status--ok {
+  color: var(--dsw-alias-state-success-primary);
+}
+
+.tool__status--error {
+  color: var(--dsw-alias-state-error-primary);
+}
+
+.tool__body {
+  padding: 10px 12px;
+  border-top: 0.5px solid var(--dsw-alias-border-l1);
+}
+
+.tool__label {
+  margin-bottom: 4px;
+  color: var(--dsw-alias-label-caption);
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.tool__pre {
+  max-height: 300px;
+  margin: 0 0 10px;
+  padding: 9px 11px;
+  border-radius: 8px;
+  background: var(--dsw-alias-markdown-code-block);
+  color: var(--dsw-alias-label-secondary);
+  font-family: var(--dsw-font-family-code);
+  font-size: 11.5px;
+  line-height: 18px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.tool__pre:last-child {
+  margin-bottom: 0;
+}
+
+/* Turn footer stats (token / duration / cost pills). */
+.statsPills {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 2px;
+  padding: 4px 0;
+  color: var(--dsw-alias-label-caption);
+  font-size: 11.5px;
+}
+
+.statsPills__item {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.statsPills__sep {
+  width: 2px;
+  height: 2px;
+  border-radius: 1px;
+  background: var(--dsw-alias-label-caption);
+}
+
+/* Session banner shown once at the top of a conversation. */
+.sessionBanner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 18px;
+  padding: 8px 12px;
+  border: 0.5px solid var(--dsw-alias-border-l1);
+  border-radius: 10px;
+  background: var(--dsw-alias-bg-layer-1);
+  color: var(--dsw-alias-label-caption);
+  font-size: 11.5px;
+}
+
+/* ================================================================ composer == */
+
+.composer {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  flex: none;
+  padding: 0 var(--dsh-composer-side-clearance) 8px;
+}
+
+/* Input capsule: r22, 8px top pad, 12px gap, soft elevation (figma Input 75:8208). */
+.composer__card {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  width: 100%;
+  max-width: var(--dsh-composer-card-max-width);
+  padding-top: 8px;
+  border-radius: 22px;
+  background: var(--dsw-specific-input-major);
+  box-shadow: inset 0 0 0 0.5px var(--dsw-alias-border-l2), var(--dsw-elevation-soft);
+  font-size: var(--dsh-content-font-size);
+  line-height: 24px;
+}
+
+.composer__card:focus-within {
+  box-shadow: inset 0 0 0 0.5px var(--dsw-alias-border-l3), var(--dsw-elevation-soft);
+}
+
+.composer__scroll {
+  max-height: 200px;
+  margin-right: 4px;
+  overflow-y: auto;
+}
+
+.composer__input {
+  display: block;
+  width: 100%;
+  min-height: 36px;
+  padding: 4px 8px 0 14px;
+  border: none;
+  background: none;
+  outline: none;
+  color: var(--dsw-alias-label-primary);
+  caret-color: var(--dsw-alias-state-business-primary);
+  font-family: var(--dsw-font-family);
+  font-size: inherit;
+  line-height: inherit;
+  resize: none;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.composer__input::placeholder {
+  color: var(--dsw-alias-label-caption);
+}
+
+/* Toolbar row: attach + modes left, model + send right. */
+.composer__row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 2px 8px 6px;
+  min-width: 0;
+}
+
+.composer__tools,
+.composer__trailing {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  gap: 12px;
+}
+
+.composer__trailing {
+  flex: none;
+  margin-left: auto;
+}
+
+/* Attach circle: 28px, selector fill. */
+.composer__add {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 999px;
+  background: var(--dsw-specific-selector);
+  color: var(--dsw-alias-label-primary);
+  font-size: 16px;
+  line-height: 1;
+}
+
+.composer__add:hover:not(:disabled) {
+  background: var(--dsw-alias-interactive-bg-hover-solid);
+}
+
+.composer__add:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* The real <input type="file"> stays hidden: it is only a handle for the button to click, because
+   a styled button cannot open the OS picker directly. */
+.composer__file {
+  display: none;
+}
+
+.composer__spinner {
+  width: 11px;
+  height: 11px;
+  border: 1.5px solid currentColor;
+  border-top-color: transparent;
+  border-radius: 999px;
+  animation: composer-spin 0.7s linear infinite;
+}
+
+@keyframes composer-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* Attach failures take the full row so the reason is readable rather than truncated in a chip. */
+.composer__attachError {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1 0 100%;
+  padding: 6px 10px;
+  border: 0.5px solid var(--dsw-alias-state-error-primary);
+  border-radius: 8px;
+  background: var(--dsw-alias-interactive-bg-hover-danger);
+  color: var(--dsw-alias-label-secondary);
+  font-size: 11.5px;
+  line-height: 17px;
+}
+
+.composer__attachDismiss {
+  flex: none;
+  margin-left: auto;
+  color: var(--dsw-alias-link);
+  font-size: 11.5px;
+}
+
+/* Mode / model triggers: 28px chip-like buttons. */
+.composer__select {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 28px;
+  max-width: 220px;
+  padding: 0 8px;
+  border-radius: 8px;
+  color: var(--dsw-alias-label-secondary);
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 20px;
+  white-space: nowrap;
+}
+
+.composer__select:hover:not(:disabled) {
+  background: var(--dsw-alias-interactive-bg-hover);
+}
+
+.composer__select:disabled {
+  opacity: 0.5;
+}
+
+/* The no-provider state reads as a link out to settings rather than a disabled control. */
+.composer__select--link {
+  color: var(--dsw-alias-link);
+}
+
+/* A secondary word inside the fallback model chip, so "去设置" reads as the action rather than as
+   part of the model name. */
+.composer__selectHint {
+  margin-left: 4px;
+  color: var(--dsw-alias-label-caption);
+  font-size: 11px;
+}
+
+/* Primary send: 34px circle, info fill (NOT brand ink). */
+.composer__send {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 999px;
+  background: var(--dsw-alias-button-info-fill);
+  color: #fff;
+  transform: translateY(-2px);
+  transition: background-color 100ms ease;
+}
+
+.composer__send:hover:not(:disabled) {
+  background: var(--dsw-alias-button-info-hover);
+}
+
+.composer__send:disabled {
+  opacity: 0.4;
+}
+
+.composer__stop {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 34px;
+  padding: 0 14px;
+  border-radius: 999px;
+  background: var(--dsw-alias-bg-layer-3);
+  color: var(--dsw-alias-label-primary);
+  font-size: 13px;
+  font-weight: 500;
+  transform: translateY(-2px);
+}
+
+.composer__stop:hover {
+  background: var(--dsw-alias-interactive-bg-hover-solid);
+}
+
+.composer__hint {
+  max-width: var(--dsh-composer-card-max-width);
+  margin-top: 6px;
+  color: var(--dsw-alias-label-caption);
+  font-size: 11.5px;
+  text-align: center;
+}
+
+/* ============================================================ setup screen == */
+
+.setup {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  justify-content: center;
+  min-height: 0;
+  padding: 18px;
+  overflow-y: auto;
+}
+
+.setup__panel {
+  display: grid;
+  /* Single column by default: on a 133%-scaled 1536px display the centre column is only
+     ~720 CSS px wide, and the two-column split needs ~880. The split is opt-in below. */
+  grid-template-columns: minmax(0, 1fr);
+  flex: none;
+  width: 100%;
+  max-width: 540px;
+  /* Grid items default to min-width:auto, so a long unbreakable value (an absolute
+     claude.exe path) would widen the track and push the panel past the column. */
+  min-width: 0;
+  border: 0.5px solid var(--dsw-alias-border-l2);
+  border-radius: 14px;
+  background: var(--dsw-alias-bg-layer-1);
+  box-shadow: var(--dsw-elevation-soft);
+  overflow: hidden;
+  /* Anchors the cancel button, which floats over the header so it is reachable in both the
+     single-column and the two-column layout. */
+  position: relative;
+}
+
+.setup__cancel {
+  position: absolute;
+  top: 11px;
+  right: 11px;
+  z-index: 1;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 11px;
+  border: 0.5px solid var(--dsw-alias-border-l2);
+  border-radius: 9px;
+  background: var(--dsw-alias-bg-overlay);
+  color: var(--dsw-alias-label-secondary);
+  font-size: 12.5px;
+  line-height: 18px;
+  cursor: pointer;
+}
+
+.setup__cancel:hover {
+  background: var(--dsw-alias-interactive-bg-hover-solid);
+  color: var(--dsw-alias-label-primary);
+}
+
+/* Four permission presets. Two columns keeps the whole choice visible without pushing 开始会话
+   off-screen, which a single column of four cards does on a 900px-tall window. */
+.permGrid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+}
+
+.permCard {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px 9px;
+  border: 0.5px solid var(--dsw-alias-border-l2);
+  border-radius: 10px;
+  background: var(--dsw-alias-bg-layer-1);
+  color: var(--dsw-alias-label-secondary);
+  text-align: left;
+  cursor: pointer;
+}
+
+.permCard:hover {
+  background: var(--dsw-alias-interactive-bg-hover);
+}
+
+.permCard--on {
+  border-color: var(--dsw-alias-state-business-primary);
+  background: var(--dsw-alias-interactive-bg-hover-accent);
+  color: var(--dsw-alias-label-primary);
+}
+
+/* The dangerous preset is marked by its LABEL, not only by the selected border: a user scanning
+   the four options should see which one skips every check before clicking it. */
+.permCard--danger .permCard__label {
+  color: var(--dsw-alias-state-error-primary);
+}
+
+/* `.permCard__top` used to be a single non-wrapping line: label left, CLI mode right. In a narrow
+   card `bypassPermissions` is longer than the space left beside the label, and with no wrapping
+   allowed it spilled OUTSIDE the card. Wrapping puts it on its own line instead. */
+.permCard__top {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 2px 6px;
+  min-width: 0;
+}
+
+.permCard__label {
+  min-width: 0;
+}
+
+.permCard__label {
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.permCard__mode {
+  color: var(--dsw-alias-label-dimmed);
+  font-family: var(--dsw-font-family-code);
+  font-size: 10.5px;
+}
+
+.permCard__desc {
+  color: var(--dsw-alias-label-caption);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+/* --- price table rows (settings → 费用核算) --------------------------------- */
+
+.pt__row {
+  margin-bottom: 12px;
+  padding: 10px 12px;
+  border: 0.5px solid var(--dsw-alias-border-l2);
+  border-radius: 12px;
+  background: var(--dsw-alias-bg-layer-1);
+}
+
+.pt__head {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.pt__label {
+  flex: 0 0 38%;
+}
+
+.pt__match {
+  flex: 1;
+  min-width: 0;
+  font-family: var(--dsw-font-family-code);
+}
+
+/* Four rate fields wrap on a narrow panel rather than shrinking into unreadable slivers. */
+.pt__rates {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(132px, 1fr));
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.pt__rate {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  color: var(--dsw-alias-label-caption);
+  font-size: 11px;
+}
+
+.pt__rate .field__input {
+  font-family: var(--dsw-font-family-code);
+  font-size: 12px;
+  padding: 5px 8px;
+}
+
+.pt__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+/* Effective-rate list: name above detail, because both can be long and neither should wrap
+   mid-word into a two-column grid not sized for them. */
+.pt__summary {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.pt__summaryRow {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.pt__summaryName {
+  color: var(--dsw-alias-label-primary);
+  font-size: 12.5px;
+}
+
+.pt__summaryDetail {
+  color: var(--dsw-alias-label-caption);
+  font-size: 11.5px;
+  line-height: 1.5;
+}
+
+/* Only split once there is room for two readable columns. */
+@media (min-width: 1180px) {
+  .setup__panel {
+    grid-template-columns: minmax(0, 0.78fr) minmax(0, 1.22fr);
+    max-width: 700px;
+  }
+}
+
+/* Narrower than this and the two columns are both unusable; also stop centring so the
+   form starts at the top instead of being pushed off both edges. 900px is the width at
+   which the 720px panel plus its 28px side padding still fits the centre column. */
+@media (max-width: 980px), (max-height: 700px) {
+  .setup {
+    align-items: flex-start;
+  }
+}
+
+@media (max-width: 760px) {
+  .setup__panel {
+    grid-template-columns: 1fr;
+  }
+}
+
+.setup__intro {
+  min-width: 0;
+  padding: 16px 18px;
+  background: var(--dsw-specific-sidebar-fill);
+  border-bottom: 0.5px solid var(--dsw-alias-border-l1);
+}
+
+.setup__form {
+  min-width: 0;
+  padding: 16px 18px 14px;
+}
+
+/* In the split layout the rule moves to the vertical edge instead. */
+@media (min-width: 1180px) {
+  .setup__intro {
+    padding: 16px 18px;
+    border-right: 0.5px solid var(--dsw-alias-border-l1);
+    border-bottom: none;
+  }
+}
+
+.setup__eyebrow {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-bottom: 6px;
+  padding: 2px 8px;
+  border-radius: 6px;
+  background: var(--dsw-alias-state-business-tertiary);
+  color: var(--dsw-static-deepseek-400);
+  font-size: 10.5px;
+  font-weight: 600;
+}
+
+.setup__title {
+  margin: 0 0 6px;
+  font-size: 16px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+
+.setup__sub {
+  margin: 0 0 11px;
+  color: var(--dsw-alias-label-secondary);
+  font-size: 12.5px;
+  line-height: 18px;
+}
+
+.field {
+  margin-bottom: 9px;
+}
+
+.field__row {
+  display: flex;
+  gap: 8px;
+}
+
+.field__pair {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+.field__label {
+  display: block;
+  margin-bottom: 4px;
+  color: var(--dsw-alias-label-secondary);
+  font-size: 12.5px;
+  font-weight: 500;
+}
+
+.field__input {
+  width: 100%;
+  min-width: 0;
+  padding: 6px 10px;
+  border: 0.5px solid var(--dsw-alias-border-l2);
+  border-radius: 7px;
+  background: var(--dsw-static-neutral-bluish-900);
+  outline: none;
+  color: var(--dsw-alias-label-primary);
+  font-size: 12.5px;
+  transition: border-color 120ms ease;
+}
+
+/* Long values (absolute paths especially) must not widen the grid track. */
+.field,
+.field__row,
+.field__pair,
+.kv__v,
+.kv__k {
+  min-width: 0;
+}
+
+.field__input:focus {
+  border-color: var(--dsw-alias-state-business-primary);
+}
+
+.field__hint {
+  margin-top: 4px;
+  color: var(--dsw-alias-label-caption);
+  font-size: 11.5px;
+  line-height: 16px;
+}
+
+/* The endpoint a session will actually use, shown because a model name alone does not say it. */
+.endpointLine {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 7px;
+  margin: -4px 0 12px;
+  padding: 7px 10px;
+  border: 0.5px solid var(--dsw-alias-border-l1);
+  border-radius: 8px;
+  background: var(--dsw-alias-bg-layer-2);
+}
+
+.endpointLine__name {
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.endpointLine__url {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--dsw-alias-label-caption);
+  font-family: var(--dsw-font-family-code);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.endpointLine__ok,
+.endpointLine__warn {
+  flex: none;
+  margin-left: auto;
+  padding: 1px 7px;
+  border-radius: 5px;
+  font-size: 10.5px;
+  font-weight: 600;
+}
+
+.endpointLine__ok {
+  background: var(--dsw-alias-state-success-tertiary);
+  color: var(--dsw-alias-state-success-secondary);
+}
+
+.endpointLine__warn {
+  background: var(--dsw-alias-interactive-bg-hover-danger);
+  color: var(--dsw-alias-state-error-primary);
+}
+
+.btnGhost {
+  flex: none;
+  padding: 8px 13px;
+  border: 0.5px solid var(--dsw-alias-border-l2);
+  border-radius: 8px;
+  background: var(--dsw-alias-bg-layer-2);
+  font-size: 12px;
+}
+
+.btnGhost:hover {
+  background: var(--dsw-alias-interactive-bg-hover-solid);
+}
+
+.btnGhost--icon {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+
+/* Recent workspace shortcuts under the picker row. */
+.recent {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 5px;
+  margin-top: 4px;
+}
+
+.recent__label {
+  color: var(--dsw-alias-label-caption);
+  font-size: 11px;
+}
+
+.recent__item {
+  max-width: 150px;
+  overflow: hidden;
+  padding: 2px 7px;
+  border: 0.5px solid var(--dsw-alias-border-l1);
+  border-radius: 999px;
+  background: var(--dsw-alias-bg-layer-2);
+  color: var(--dsw-alias-label-secondary);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.recent__item:hover {
+  border-color: var(--dsw-alias-border-l3);
+  color: var(--dsw-alias-label-primary);
+}
+
+.btnPrimary {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  width: 100%;
+  height: 32px;
+  margin-top: 2px;
+  border-radius: 10px;
+  background: var(--dsw-alias-button-primary-fill);
+  color: var(--dsw-alias-label-primary-foreground);
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.btnPrimary:hover:not(:disabled) {
+  background: var(--dsw-alias-button-primary-hover);
+}
+
+.btnPrimary:disabled {
+  opacity: 0.45;
+}
+
+/* ================================================================ feedback == */
+
+.banner {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin-bottom: 8px;
+  padding: 7px 9px;
+  border-radius: 8px;
+  font-size: 12px;
+  line-height: 16px;
+}
+
+.banner--error {
+  background: var(--dsw-alias-interactive-bg-hover-danger);
+  color: var(--dsw-alias-state-error-primary);
+}
+
+.banner--info {
+  background: var(--dsw-alias-state-business-tertiary);
+  color: var(--dsw-static-deepseek-400);
+}
+
+.kv {
+  display: grid;
+  grid-template-columns: 70px minmax(0, 1fr);
+  gap: 3px 8px;
+  margin-top: 10px;
+  padding-top: 9px;
+  border-top: 0.5px solid var(--dsw-alias-border-l1);
+  font-size: 10.5px;
+}
+
+.kv__k {
+  color: var(--dsw-alias-label-caption);
+}
+
+.kv__v {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--dsw-alias-label-tertiary);
+  font-family: var(--dsw-font-family-code);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.empty {
+  padding: 48px 16px;
+  color: var(--dsw-alias-label-caption);
+  text-align: center;
+}
+
+.empty__title {
+  margin-bottom: 6px;
+  color: var(--dsw-alias-label-secondary);
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.spinner {
+  display: inline-block;
+  width: 11px;
+  height: 11px;
+  border: 2px solid var(--dsw-alias-border-l3);
+  border-top-color: var(--dsw-alias-state-business-primary);
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* ---------------------------------------------------------------------------
+ * Shared settings-panel primitives.
+ *
+ * These live GLOBALLY, not in SettingsPanel's scoped block, because four components share them:
+ * SettingsPanel and the AuditPanel / BundledPanel / ImportPanel children. Scoped CSS does not reach
+ * a child component's descendants, so while these rules were scoped the child panels silently fell
+ * back to browser defaults — headings at 16.38px and body text at an undifferentiated 14px.
+ * --------------------------------------------------------------------------- */
+
+.st__field {
+  margin-bottom: 22px;
+}
+
+.st__field--boxed {
+  padding: 12px;
+  border: 0.5px solid var(--dsw-alias-border-l1);
+  border-radius: 10px;
+  background: var(--dsw-alias-bg-layer-1);
+}
+
+.st__h {
+  margin: 0 0 8px;
+  font-size: 15.5px;
+  font-weight: 600;
+}
+
+.st__sub {
+  margin: 0 0 18px;
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 13px;
+  line-height: 20px;
+}
+
+.st__label {
+  display: block;
+  margin-bottom: 8px;
+  color: var(--dsw-alias-label-secondary);
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.st__hint {
+  margin: 7px 0 0;
+  color: var(--dsw-alias-label-caption);
+  font-size: 12px;
+  line-height: 19px;
+}
+
+/* A rejected action has to look like one, not like another grey caption line. */
+.st__hint--error {
+  color: var(--dsw-alias-state-error-primary);
+}
+
+/* And a passing one has to look like a pass. Without this the success message of 测试连接 rendered in
+   the same caption grey as every neutral hint, so "连接成功 · 现在可以保存" carried no more weight
+   than the surrounding prose. */
+.st__hint--ok {
+  color: var(--dsw-alias-state-success-primary);
+}

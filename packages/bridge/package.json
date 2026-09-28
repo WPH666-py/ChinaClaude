@@ -1,0 +1,20 @@
+{
+  "name": "@cccn/bridge",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Zero-dependency Node bridge: owns claude.exe sessions and exposes them over HTTP + SSE.",
+  "main": "src/cli.mjs",
+  "bin": {
+    "cccn-bridge": "src/cli.mjs"
+  },
+  "scripts": {
+    "start": "node src/cli.mjs",
+    "test:e2e": "node test/e2e.mjs",
+    "test:ui": "node test/ui-flow.mjs",
+    "mock": "node test/mock-server.mjs --port 59911"
+  },
+  "engines": {
+    "node": ">=22.0.0"
+  }
+}

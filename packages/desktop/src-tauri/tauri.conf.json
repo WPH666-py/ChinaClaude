@@ -1,0 +1,42 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Claude Code CN",
+  "version": "0.1.0",
+  "identifier": "com.claudecodecn.desktop",
+  "build": {
+    "frontendDist": "../../web/dist",
+    "devUrl": "http://localhost:5173",
+    "beforeDevCommand": "",
+    "beforeBuildCommand": ""
+  },
+  "app": {
+    "withGlobalTauri": false,
+    "security": {
+      "csp": "default-src 'self'; connect-src 'self' http://127.0.0.1:* http://localhost:* ipc: http://ipc.localhost; style-src 'self' 'unsafe-inline'; img-src 'self' data:; script-src 'self'"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["nsis"],
+    "icon": ["icons/Claudecode-CN.ico"],
+    "resources": [
+      "resources/sidecar/node.exe",
+      "resources/sidecar/claude.exe",
+      "resources/sidecar/bridge",
+      "resources/sidecar/skills",
+      "resources/sidecar/vet"
+    ],
+    "windows": {
+      "webviewInstallMode": {
+        "type": "offlineInstaller",
+        "silent": true
+      },
+      "nsis": {
+        "installMode": "currentUser",
+        "languages": ["SimpChinese", "English"],
+        "installerIcon": "icons/Claudecode-CN.ico",
+        "uninstallerIcon": "icons/Claudecode-CN.ico"
+      }
+    }
+  }
+}

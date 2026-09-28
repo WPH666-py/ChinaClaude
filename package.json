@@ -1,0 +1,20 @@
+{
+  "name": "claude-code-cn",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Claude Code desktop client (CN build): Vue 3 + Node bridge + Tauri, backed by an Anthropic-compatible endpoint.",
+  "type": "module",
+  "packageManager": "pnpm@11.27.1",
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "scripts": {
+    "bridge": "node packages/bridge/src/cli.mjs",
+    "dev:web": "pnpm --filter @cccn/web dev",
+    "dev:tauri": "pnpm --filter @cccn/desktop dev",
+    "typecheck:web": "pnpm --filter @cccn/web typecheck"
+  },
+  "workspaces": [
+    "packages/*"
+  ]
+}

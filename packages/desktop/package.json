@@ -1,0 +1,20 @@
+{
+  "name": "@cccn/desktop",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Tauri shell: owns the Node bridge sidecar and the webview that renders the Vue UI.",
+  "scripts": {
+    "dev": "tauri dev",
+    "build": "pnpm prepare:sidecar && tauri build",
+    "build:web": "pnpm --dir ../web build",
+    "tauri": "tauri",
+    "prepare:sidecar": "node scripts/prepare-sidecar.mjs"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2.2.0"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.2.0"
+  }
+}

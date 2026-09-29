@@ -87,9 +87,8 @@ export interface ProviderModel {
  */
 export const EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max'] as const
 
-/** An Anthropic-compatible endpoint plus the models it serves. */
 /**
- * Known Anthropic-compatible vendors, as one-click starting points.
+ * Domestic model platforms, as one-click starting points.
  *
  * WHY A LIST RATHER THAN A FREE-TEXT NAME FIELD: naming a provider is not a creative act — it is a
  * label for an endpoint — and getting it wrong is confusing in a specific way. The reported case was
@@ -98,26 +97,32 @@ export const EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max'] as const
  *
  * A BASE URL IS INCLUDED ONLY WHEN IT WAS VERIFIED IN THE VENDOR'S OWN DOCS. A guessed endpoint fails
  * silently — the user sees an auth or 404 error and blames the app — so vendors whose Anthropic-compatible
- * address could not be confirmed are NOT listed at all; "自定义" covers them, with the URL typed from
- * their own documentation.
+ * address could not be confirmed carry an EMPTY `baseUrl` and are listed for their console link only.
+ * An empty baseUrl is not a gap to fill in later by guessing: it is the honest state of that row.
  *
- * Verified sources:
+ * Verified Anthropic-compatible addresses:
  *   deepseek  https://api.deepseek.com/anthropic                    (shipped default, exercised live)
  *   qwen      https://dashscope.aliyuncs.com/apps/anthropic         (Aliyun Model Studio docs)
  *   glm       https://open.bigmodel.cn/api/anthropic                (Zhipu open docs)
  *   kimi      https://api.moonshot.cn/anthropic                     (Kimi open platform docs)
  *
+ * `consoleUrl` is the vendor's API open-platform home — where a key is actually issued, which is the
+ * step that blocks a first run. It is a much weaker claim than an endpoint (a homepage either exists
+ * or it does not), so every listed vendor can carry one even when its endpoint is unconfirmed.
+ *
  * `modelHint` is a starting NAME to type into the model row. It is deliberately not auto-added:
  * several of these vendors expose no model-list endpoint, so the model must be stated explicitly, and
- * silently inventing one would hide that.
+ * silently inventing one would hide that. It is left empty wherever the vendor's current model names
+ * were not confirmed.
  */
 export const VENDOR_PRESETS = [
   {
     id: 'deepseek',
     name: 'DeepSeek',
     baseUrl: 'https://api.deepseek.com/anthropic',
-    modelHint: 'deepseek-chat',
+    consoleUrl: 'https://platform.deepseek.com/',
     docsUrl: 'https://api-docs.deepseek.com/zh-cn/',
+    modelHint: 'deepseek-chat',
     /** Balance and pricing are built in for this one. */
     note: '内置余额查询与价目表',
   },
@@ -125,25 +130,100 @@ export const VENDOR_PRESETS = [
     id: 'qwen',
     name: '千问 Qwen',
     baseUrl: 'https://dashscope.aliyuncs.com/apps/anthropic',
-    modelHint: 'qwen3.8-flash',
+    consoleUrl: 'https://bailian.console.aliyun.com/',
     docsUrl: 'https://help.aliyun.com/zh/model-studio/anthropic-api-messages',
+    modelHint: 'qwen3.8-flash',
     note: '不提供模型列表接口，模型名需手动填写',
   },
   {
     id: 'glm',
     name: '智谱 GLM',
     baseUrl: 'https://open.bigmodel.cn/api/anthropic',
-    modelHint: 'glm-4.6',
+    consoleUrl: 'https://open.bigmodel.cn/',
     docsUrl: 'https://docs.bigmodel.cn/cn/guide/develop/claude/introduction',
+    modelHint: 'glm-4.6',
     note: '',
   },
   {
     id: 'kimi',
     name: 'Kimi 月之暗面',
     baseUrl: 'https://api.moonshot.cn/anthropic',
-    modelHint: 'kimi-k2-0905-preview',
+    consoleUrl: 'https://platform.moonshot.cn/',
     docsUrl: 'https://platform.kimi.com/docs/api/overview',
+    modelHint: 'kimi-k2-0905-preview',
     note: '内置余额查询（/v1/users/me/balance）',
+  },
+  {
+    id: 'stepfun',
+    name: '阶跃星辰 StepFun',
+    baseUrl: '',
+    consoleUrl: 'https://platform.stepfun.com/',
+    docsUrl: 'https://platform.stepfun.com/docs/zh/step-plan/quick-start',
+    modelHint: '',
+    note: '官方文档列有 Anthropic 兼容入口，地址以文档为准',
+  },
+  {
+    id: 'minimax',
+    name: 'MiniMax',
+    baseUrl: '',
+    consoleUrl: 'https://platform.minimaxi.com/',
+    docsUrl: 'https://platform.minimax.io/docs/api-reference/text-anthropic-api',
+    modelHint: '',
+    note: '官方文档有「Anthropic SDK」一节，地址以文档为准',
+  },
+  {
+    id: 'ark',
+    name: '火山方舟（豆包）',
+    baseUrl: '',
+    consoleUrl: 'https://console.volcengine.com/ark',
+    docsUrl: 'https://www.volcengine.com/docs/82379',
+    modelHint: '',
+    note: '需在控制台确认 Anthropic 兼容入口',
+  },
+  {
+    id: 'qianfan',
+    name: '百度千帆（文心）',
+    baseUrl: '',
+    consoleUrl: 'https://console.bce.baidu.com/qianfan/',
+    docsUrl: 'https://cloud.baidu.com/doc/qianfan-api/index.html',
+    modelHint: '',
+    note: '需在控制台确认 Anthropic 兼容入口',
+  },
+  {
+    id: 'hunyuan',
+    name: '腾讯混元',
+    baseUrl: '',
+    consoleUrl: 'https://console.cloud.tencent.com/hunyuan',
+    docsUrl: 'https://cloud.tencent.com/document/product/1729',
+    modelHint: '',
+    note: '需在控制台确认 Anthropic 兼容入口',
+  },
+  {
+    id: 'xfyun',
+    name: '讯飞星火',
+    baseUrl: '',
+    consoleUrl: 'https://console.xfyun.cn/',
+    docsUrl: 'https://www.xfyun.cn/doc/spark/Web.html',
+    modelHint: '',
+    note: '需在控制台确认 Anthropic 兼容入口',
+  },
+  {
+    id: 'sensenova',
+    name: '商汤日日新',
+    baseUrl: '',
+    consoleUrl: 'https://platform.sensenova.cn/',
+    docsUrl: 'https://platform.sensenova.cn/doc',
+    modelHint: '',
+    note: '需在控制台确认 Anthropic 兼容入口',
+  },
+  {
+    id: 'siliconflow',
+    name: '硅基流动 SiliconFlow',
+    baseUrl: '',
+    consoleUrl: 'https://cloud.siliconflow.cn/',
+    docsUrl: 'https://docs.siliconflow.cn/',
+    modelHint: '',
+    note: '聚合多家模型，需确认其 Anthropic 兼容入口',
   },
 ] as const
 
@@ -209,10 +289,16 @@ export interface Settings {
   sendOnEnter: boolean
   permissionPreset: string
   /**
-   * Which model new sessions start on, as "providerId::model". Empty means the endpoint default.
-   * A bare model id (no separator) is also accepted and resolves against the default provider.
+   * REMOVED: `defaultModelRef`.
+   *
+   * There is no longer a "default model for new sessions" setting. A model is only ever reachable
+   * through the provider that serves it, so a second, session-level default could disagree with the
+   * provider list — and did: a stale reference kept selecting a model the user had already removed,
+   * with no UI left that showed why. A new session now starts on the default PROVIDER's first model,
+   * which is the single place that choice is expressed.
+   *
+   * A persisted `defaultModelRef` from an older build is ignored and stripped on load.
    */
-  defaultModelRef: string
   providers: Provider[]
   /** User price rows for cost accounting; they take precedence over the built-in table. */
   priceTables: PriceTable[]
@@ -238,7 +324,6 @@ function defaults(): Settings {
     appearance: 'dark',
     sendOnEnter: true,
     permissionPreset: 'ask',
-    defaultModelRef: '',
     providers: [],
     priceTables: [],
   }
@@ -260,11 +345,15 @@ function load(): Settings {
   try {
     const raw = localStorage.getItem(STORAGE_KEY)
     if (!raw) return base
-    const parsed = JSON.parse(raw) as Partial<Settings> & { showNativeModels?: unknown }
+    const parsed = JSON.parse(raw) as Partial<Settings> & {
+      showNativeModels?: unknown
+      defaultModelRef?: unknown
+    }
     const providers = Array.isArray(parsed.providers) ? parsed.providers : []
     const priceTables = Array.isArray(parsed.priceTables) ? parsed.priceTables : []
-    // `showNativeModels` was removed; drop it so an old blob cannot resurrect the option.
+    // Both were removed; drop them so an old blob cannot resurrect either option.
     delete parsed.showNativeModels
+    delete parsed.defaultModelRef
     return {
       ...base,
       ...parsed,
@@ -298,35 +387,6 @@ function load(): Settings {
 }
 
 const settings = ref<Settings>(load())
-
-/**
- * Drop a default-model reference that no longer resolves.
- *
- * This is the fix for a real trap: a reference picked while the CLI's native model list was
- * visible (e.g. `sonnet[1m]`) kept applying to every new session after that list was hidden,
- * with no UI left to change or clear it — so the session ran on an Anthropic model name that
- * looked like it came from nowhere. A reference that cannot be resolved is stale by definition.
- */
-function pruneStaleModelRef() {
-  const ref = settings.value.defaultModelRef
-  if (!ref) return
-
-  const { providerId, model } = parseModelRef(ref)
-
-  // A bare id can only be a CLI-native alias, and those are no longer selectable, so such a
-  // reference is stale by definition. This is what clears a `sonnet[1m]` left behind by an older
-  // build — otherwise it would keep applying invisibly with no UI able to change it.
-  if (!providerId) {
-    settings.value.defaultModelRef = ''
-    return
-  }
-  const provider = settings.value.providers.find((entry) => entry.id === providerId)
-  if (!provider || !provider.models.some((entry) => entry.model === model)) {
-    settings.value.defaultModelRef = ''
-  }
-}
-
-pruneStaleModelRef()
 
 watch(
   settings,
@@ -427,6 +487,19 @@ export function useSettings() {
     return options.find((option) => option.model === ref) ?? null
   }
 
+  /**
+   * The model a new session starts on: the default provider's first model.
+   *
+   * This is the ONLY precedence rule for that choice now that the session-level default is gone. A
+   * separate default could disagree with the provider list, and did — see the note on `Settings`.
+   * Returns null when nothing is bound, which is the signal the shell turns into "去设置里绑定".
+   */
+  function defaultModelOption(): ModelOption | null {
+    const provider = defaultProvider()
+    if (!provider) return null
+    return modelOptions().find((option) => option.providerId === provider.id) ?? null
+  }
+
   function addProvider(provider: Omit<Provider, 'id'>) {
     const created: Provider = { ...provider, id: crypto.randomUUID() }
     // The first provider becomes the default so a fresh setup needs no extra step.
@@ -445,9 +518,6 @@ export function useSettings() {
     // Re-point the default if the removed provider held it.
     if (settings.value.providers.length > 0 && !settings.value.providers.some((p) => p.isDefault)) {
       settings.value.providers[0].isDefault = true
-    }
-    if (parseModelRef(settings.value.defaultModelRef).providerId === id) {
-      settings.value.defaultModelRef = ''
     }
   }
 
@@ -495,18 +565,15 @@ export function useSettings() {
     })
   }
 
-  function addModel(providerId: string, model: Omit<ProviderModel, 'id'>) {    const provider = providerById(providerId)
+  function addModel(providerId: string, model: Omit<ProviderModel, 'id'>) {
+    const provider = providerById(providerId)
     if (provider) provider.models.push({ ...model, id: crypto.randomUUID() })
   }
 
   function removeModel(providerId: string, modelId: string) {
     const provider = providerById(providerId)
     if (!provider) return
-    const removed = provider.models.find((model) => model.id === modelId)
     provider.models = provider.models.filter((model) => model.id !== modelId)
-    if (removed && parseModelRef(settings.value.defaultModelRef).model === removed.model) {
-      settings.value.defaultModelRef = ''
-    }
   }
 
   /** Pin a reasoning effort to one model; an empty level restores the CLI's model default. */
@@ -530,6 +597,7 @@ export function useSettings() {
     defaultProvider,
     modelOptions,
     resolveOption,
+    defaultModelOption,
     addProvider,
     updateProvider,
     removeProvider,

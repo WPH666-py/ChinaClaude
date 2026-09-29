@@ -21,8 +21,6 @@ import { priceEvents, isPeak } from '../../bridge/src/pricing.mjs'
 const bridge = useBridge()
 const store = useSettings()
 
-const workspace = ref('')
-const model = ref('')
 /**
  * Permission preset chosen for the session about to be created.
  *
@@ -33,18 +31,13 @@ const model = ref('')
  */
 const newSessionPresetId = ref(store.settings.value.permissionPreset)
 const newSessionPreset = computed(() => store.presetById(newSessionPresetId.value))
-const token = ref('')
-const baseUrl = ref('')
 const setupOpen = ref(true)
 const starting = ref(false)
 const startError = ref<string | null>(null)
-const showCredential = ref(false)
 const pickerOpen = ref(false)
 const catalogOpen = ref(false)
 const settingsOpen = ref(false)
 const sidebarCollapsed = ref(false)
-/** Model chosen in the setup form, as "providerId::model"; empty follows the provider default. */
-const newSessionModelRef = ref('')
 const tab = ref<'chat' | 'trace'>('chat')
 /** Set when the user explicitly asks for a new session, so polling never overrides it. */
 const setupPinnedByUser = ref(false)
@@ -55,12 +48,58 @@ const binaryMissing = computed(() => bridge.discovery.value !== null && binaryPa
 /** Projects the CLI already knows about, as one-click workspace shortcuts. */
 const recentProjects = computed(() => (bridge.discovery.value?.projects ?? []).slice(0, 6))
 
-/** Directory the picker should open on: a real project if we know one, else home. */
-const pickerStart = computed(() => recentProjects.value[0]?.path ?? workspace.value)
+/**
+ * The user's home directory, read once from the bridge.
+ *
+ * Needed because a session has to run somewhere and a first run has no project history to fall back
+ * on — the bridge resolves `~` itself, but the shell has to name a starting folder.
+ */
+const homeDir = ref('')
 
-/** Providers configured in settings; when there are none the form falls back to manual entry. */
+/**
+ * Where a new session runs, without asking.
+ *
+ * Most recent project first, else home. "New session" used to open a form whose first required field
+ * was a directory, so the common case — the same project as last time — cost a click and a decision
+ * every single time. The picker stays reachable from the top bar for when it is genuinely elsewhere.
+ */
+const defaultWorkspace = computed(() => recentProjects.value[0]?.path ?? homeDir.value)
+
+/** Directory the picker should open on: a real project if we know one, else home. */
+const pickerStart = computed(() => recentProjects.value[0]?.path ?? homeDir.value)
+
+/** Providers configured in settings. */
 const configuredProviders = computed(() => store.settings.value.providers)
 const hasProviders = computed(() => configuredProviders.value.length > 0)
+
+/**
+ * The (provider, model) pair a new session starts on: the default provider's first model.
+ *
+ * There is no longer a separate "default model" setting. Two controls for one decision is what let a
+ * stale model reference keep selecting a model its provider no longer served.
+ */
+const boundModel = computed(() => store.defaultModelOption())
+
+/** Whether anything is bound at all. The one condition that gates starting a session. */
+const hasBoundModel = computed(() => boundModel.value !== null)
+
+/**
+ * Bound, but its provider holds no credential.
+ *
+ * Reported separately from "not bound" because it fails in a completely different place: the session
+ * starts fine and then every request 401s, which reads as a broken app rather than as missing setup.
+ */
+const boundModelMissingKey = computed(() => {
+  const chosen = boundModel.value
+  return chosen !== null && !chosen.apiKey
+})
+
+/** The endpoint the placeholder screen names, so "which account is this about to use" is answered. */
+const boundEndpoint = computed(() => {
+  const chosen = boundModel.value
+  if (!chosen) return null
+  return { name: chosen.providerName, baseUrl: chosen.baseUrl, model: chosen.model }
+})
 
 /**
  * Session cost, priced from the event stream with the user's rate tables.
@@ -184,25 +223,21 @@ const balanceText = computed(() => {
 
 const balanceError = computed(() => (balance.value && !balance.value.available ? (balance.value.error ?? '不可用') : null))
 
-/** Models offered in the setup form, as (provider, model) pairs. */
-const setupModelOptions = computed(() => store.modelOptions())
-
-/** The provider the chosen model belongs to, for the "which endpoint" line. */
-const setupEndpoint = computed(() => {
-  const chosen = store.resolveOption(newSessionModelRef.value || store.settings.value.defaultModelRef)
-  const provider = chosen ? store.providerById(chosen.providerId) : store.defaultProvider()
-  return provider ? { name: provider.name, baseUrl: provider.baseUrl, hasKey: Boolean(provider.apiKey) } : null
-})
-
 /** Last path segment, which is what identifies a project in a narrow chip. */
 function shortPath(path: string): string {
   const parts = path.split(/[\\/]/).filter(Boolean)
   return parts[parts.length - 1] ?? path
 }
 
+/**
+ * Picking a directory STARTS a session there.
+ *
+ * The picker used to fill a field in a form that was submitted later. With the form gone, choosing a
+ * folder is the whole instruction — there is nothing left to submit it to.
+ */
 function onPickDirectory(path: string) {
-  workspace.value = path
   pickerOpen.value = false
+  void createSessionIn(path)
 }
 
 /**
@@ -291,8 +326,14 @@ onMounted(async () => {
 
   const discovered = bridge.discovery.value
   if (discovered) {
-    baseUrl.value = discovered.baseUrl ?? 'https://api.deepseek.com/anthropic'
-    workspace.value = discovered.projects[0]?.path ?? discovered.claude.home
+    // The home directory, for a first run that has no project history to fall back on.
+    try {
+      const result = await fetch(`${bridge.baseUrl.value}/api/directories/roots`).then((r) => r.json())
+      const roots: Array<{ label: string; path: string }> = result.roots ?? []
+      homeDir.value = roots.find((root) => root.label === '主目录')?.path ?? roots[0]?.path ?? ''
+    } catch {
+      // Left empty on failure; the bridge falls back to its own working directory.
+    }
   }
   setupOpen.value = bridge.sessions.value.length === 0
 
@@ -330,6 +371,19 @@ onMounted(async () => {
 
   // Sessions are server-owned: keep the sidebar in step with anything created elsewhere.
   bridge.startSessionPolling()
+
+  /**
+   * Auto-start on first open.
+   *
+   * A bound model means the app already knows the endpoint, the credential, the model and the folder,
+   * so there is nothing left to ask — which is the entire point of removing the form. Skipped when a
+   * dev affordance or an explicit `?session=` is driving the view, so those stay reproducible, and
+   * skipped when nothing is bound, where the placeholder screen takes over instead.
+   */
+  const pinnedByUrl = Boolean(requestedSession) || params.get('picker') === '1' || params.get('catalog') === '1'
+  if (setupOpen.value && !pinnedByUrl && hasBoundModel.value) {
+    void createSessionIn(defaultWorkspace.value)
+  }
 })
 
 /**
@@ -350,33 +404,50 @@ watch(
 onBeforeUnmount(() => bridge.detach())
 
 /**
- * Start a session on the endpoint the user's model choice implies.
+ * Start a session in `cwd` on the bound model.
  *
- * Precedence matters: an explicit provider+model selection wins, then the provider's own
- * settings, then the manual fallback fields (used only before any provider is configured).
+ * Everything the old setup form asked for is now RESOLVED rather than requested: the endpoint and key
+ * come from the provider that owns the model, the model from that provider's own list, and the
+ * permission mode from the saved default. Each stays changeable afterwards — model and mode from the
+ * composer, directory from the picker — so none of them needs to be a precondition for starting.
  */
-async function startSession() {
+async function createSessionIn(cwd: string) {
+  const chosen = boundModel.value
+  if (!chosen) {
+    // Nothing is bound: show the placeholder rather than create a session that cannot answer.
+    setupOpen.value = true
+    setupPinnedByUser.value = true
+    startError.value = null
+    return
+  }
+
   starting.value = true
   startError.value = null
+  /**
+   * Pin while the session is being created.
+   *
+   * The adoption watcher fires when the session count changes, and `bridge.createSession` changes it —
+   * so without this it would race this function and attach to the session we are already attaching to.
+   * The pin stays on failure as well: an error screen is what the user is looking at, and having a
+   * session appear under it would hide the reason it failed.
+   */
+  setupPinnedByUser.value = true
   try {
-    const chosen = store.resolveOption(newSessionModelRef.value || store.settings.value.defaultModelRef)
-    const provider = chosen ? store.providerById(chosen.providerId) : store.defaultProvider()
-
     const session = await bridge.createSession({
-      cwd: workspace.value.trim(),
-      model: chosen?.model || model.value.trim() || undefined,
+      cwd: cwd.trim(),
+      model: chosen.model || undefined,
       permissionMode: newSessionPreset.value.mode,
-      // A provider owns its endpoint and key; the manual fields only apply when none exists.
-      baseUrl: provider?.baseUrl || baseUrl.value.trim() || undefined,
-      authToken: provider ? provider.apiKey : token.value.trim() || undefined,
+      baseUrl: chosen.baseUrl || undefined,
+      authToken: chosen.apiKey || undefined,
       // Empty means "model default" and is dropped by the bridge rather than sent as a level.
-      effort: chosen?.effort || undefined,
+      effort: chosen.effort || undefined,
     })
     await bridge.openSession(session.id)
     setupOpen.value = false
     setupPinnedByUser.value = false
   } catch (error) {
     startError.value = String((error as Error).message ?? error)
+    setupOpen.value = true
   } finally {
     starting.value = false
   }
@@ -402,20 +473,24 @@ async function onOpenTranscript(transcript: TranscriptSummary) {
     return
   }
   startError.value = null
+  const chosen = boundModel.value
+  if (!chosen) {
+    // Resuming still needs an endpoint: the conversation continues through this app, not around it.
+    startError.value = '还没有绑定模型：请先到「设置 → 模型」添加服务商与模型，再继续会话。'
+    settingsOpen.value = true
+    return
+  }
   try {
-    const chosen = store.resolveOption(newSessionModelRef.value || store.settings.value.defaultModelRef)
-    const provider = chosen ? store.providerById(chosen.providerId) : store.defaultProvider()
-
     const session = await bridge.createSession({
-      // The transcript's own cwd, not the setup form's: resuming against a different directory would
-      // leave the CLI unable to find the conversation it was asked to resume.
-      cwd: transcript.cwd || workspace.value.trim(),
+      // The transcript's own cwd, not the default workspace's: resuming against a different directory
+      // would leave the CLI unable to find the conversation it was asked to resume.
+      cwd: transcript.cwd || defaultWorkspace.value,
       resumeSessionId: transcript.sessionId,
-      model: chosen?.model || model.value.trim() || undefined,
+      model: chosen.model || undefined,
       permissionMode: newSessionPreset.value.mode,
-      baseUrl: provider?.baseUrl || baseUrl.value.trim() || undefined,
-      authToken: provider ? provider.apiKey : token.value.trim() || undefined,
-      effort: chosen?.effort || undefined,
+      baseUrl: chosen.baseUrl || undefined,
+      authToken: chosen.apiKey || undefined,
+      effort: chosen.effort || undefined,
     })
     await bridge.openSession(session.id)
     settingsOpen.value = false
@@ -426,40 +501,23 @@ async function onOpenTranscript(transcript: TranscriptSummary) {
   }
 }
 
+/**
+ * New session: create one, do not open a form.
+ *
+ * A request that opens a questionnaire is a request the user must finish before they can do the thing
+ * they asked for. With nothing bound there is genuinely nothing to start, so that case points at where
+ * to bind a model instead of showing a form that could not succeed.
+ */
 function newSession() {
-  setupOpen.value = true
-  setupPinnedByUser.value = true
   startError.value = null
+  if (!hasBoundModel.value) {
+    setupOpen.value = true
+    setupPinnedByUser.value = true
+    return
+  }
+  void createSessionIn(defaultWorkspace.value)
 }
 
-/**
- * Leave the setup form without creating a workspace.
- *
- * Where the user lands depends on whether anything is open, and all three cases have to be
- * deliberate:
- *   - a session is already active  -> return to it, so cancelling is never destructive;
- *   - sessions exist but none active -> fall back to the newest one, so the app is not left on a
- *     blank screen with no obvious way forward;
- *   - no sessions at all (first run) -> show the empty state, where 新建会话 is still the obvious
- *     next action.
- *
- * `setupPinnedByUser` is cleared only in the last case: with no session to fall back to, leaving it
- * set would block the adoption watcher from picking up a session created elsewhere.
- */
-function cancelSetup() {
-  startError.value = null
-  setupOpen.value = false
-  if (bridge.activeSessionId.value) {
-    setupPinnedByUser.value = false
-    return
-  }
-  const newest = bridge.sessions.value[0]
-  if (newest) {
-    void openExisting(newest.id)
-    return
-  }
-  setupPinnedByUser.value = false
-}
 </script>
 
 <template>
@@ -489,24 +547,24 @@ function cancelSetup() {
 
     <div class="centerCol">
       <!-- ------------------------------------------------------ setup screen -- -->
+      <!--
+        Placeholder screen. Reached only when a session cannot simply be started: nothing is bound
+        yet, or an auto-start failed. It is deliberately NOT a form — everything the old form asked
+        for (directory, model, endpoint, key, permission mode) is already stored in settings, so
+        asking again would be asking the user to type back what they already told us.
+      -->
       <div v-if="setupOpen" class="setup">
         <div class="setup__panel">
-          <!--
-            Cancel sits at the TOP, away from 开始会话 at the bottom: creating a workspace is a
-            commitment, so the way out is where the eye lands first rather than next to the
-            confirming button where it would be easy to hit by accident.
-          -->
-          <button class="setup__cancel" type="button" title="取消新建工作区" @click="cancelSetup">
-            <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-              <path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
-            </svg>
-            取消
-          </button>
           <div class="setup__intro">
             <span class="setup__eyebrow">首次启动</span>
-            <h1 class="setup__title">新建会话</h1>
+            <h1 class="setup__title">{{ hasBoundModel ? '正在新建会话…' : '您还未绑定模型' }}</h1>
             <p class="setup__sub">
-              Claude Code 以本机进程运行，模型走 Anthropic 兼容端点；凭据只随本次请求传给本地桥。
+              <template v-if="hasBoundModel">
+                Claude Code 以本机进程运行，模型走 Anthropic 兼容端点；凭据只随本次请求传给本地桥。
+              </template>
+              <template v-else>
+                请到「设置 → 模型」绑定服务商与模型。绑定后新建会话会直接开始，不需要再填任何信息。
+              </template>
             </p>
 
             <div v-if="!bridge.connected.value" class="banner banner--error">
@@ -518,6 +576,20 @@ function cancelSetup() {
               <code>npm i -g @anthropic-ai/claude-code</code>，或用
               <code>CCCN_CLAUDE_BINARY</code> 指定路径。
             </div>
+
+            <!-- Which endpoint and model are about to be used, stated before they are used. -->
+            <div v-if="boundEndpoint" class="endpointLine">
+              <span class="endpointLine__name">{{ boundEndpoint.name }} · {{ boundEndpoint.model }}</span>
+              <code class="endpointLine__url">{{ boundEndpoint.baseUrl }}</code>
+              <span v-if="!boundModelMissingKey" class="endpointLine__ok">已配置 Key</span>
+              <span v-else class="endpointLine__warn">缺少 API-KEY</span>
+            </div>
+
+            <div v-if="boundModelMissingKey" class="banner banner--error">
+              「{{ boundEndpoint?.name }}」还没有 API-KEY。请到「设置 → 模型」补上，否则会话会因鉴权失败而无法使用。
+            </div>
+
+            <div v-if="startError" class="banner banner--error">{{ startError }}</div>
 
             <div v-if="bridge.discovery.value" class="kv">
               <span class="kv__k">claude.exe</span>
@@ -537,148 +609,57 @@ function cancelSetup() {
 
           <div class="setup__form">
             <div class="field">
-              <label class="field__label" for="ws">工作目录</label>
+              <label class="field__label">工作目录</label>
               <div class="field__row">
-                <input
-                  id="ws"
-                  :value="workspace"
-                  class="field__input"
-                  spellcheck="false"
-                  readonly
-                  placeholder="点击右侧按钮选择目录"
-                />
-                <button class="btnGhost btnGhost--icon" type="button" title="浏览…" @click="pickerOpen = true">
-                  <svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-                    <path d="M2 5.5A1.5 1.5 0 013.5 4h2.2l1.2 1.4h5.6A1.5 1.5 0 0114 6.9v4.6A1.5 1.5 0 0112.5 13h-9A1.5 1.5 0 012 11.5v-6z" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round" />
-                  </svg>
-                  浏览…
-                </button>
-              </div>
-
-              <div v-if="recentProjects.length > 0" class="recent">
-                <span class="recent__label">最近使用</span>
-                <button
-                  v-for="project in recentProjects"
-                  :key="project.path"
-                  class="recent__item"
-                  type="button"
-                  :title="project.path"
-                  @click="workspace = project.path"
-                >
-                  {{ shortPath(project.path) }}
-                </button>
-              </div>
-
-              <div class="field__hint">Agent 的读写与命令执行都以此为根目录。</div>
-            </div>
-
-            <!-- Provider-backed setup: the model choice implies the endpoint and credential. -->
-            <template v-if="hasProviders">
-              <div class="field">
-                <label class="field__label" for="setupModel">模型</label>
-                <select id="setupModel" v-model="newSessionModelRef" class="field__input">
-                  <option value="">跟随默认服务商（不指定模型）</option>
-                  <option v-for="option in setupModelOptions" :key="option.ref" :value="option.ref">
-                    {{ option.label }} — {{ option.providerName }}
-                  </option>
-                </select>
-                <div class="field__hint">
-                  会话将使用该模型所属服务商的 Base URL 与 API-KEY。
-                </div>
-              </div>
-
-              <div v-if="setupEndpoint" class="endpointLine">
-                <span class="endpointLine__name">{{ setupEndpoint.name }}</span>
-                <code class="endpointLine__url">{{ setupEndpoint.baseUrl }}</code>
-                <span v-if="setupEndpoint.hasKey" class="endpointLine__ok">已配置 Key</span>
-                <span v-else class="endpointLine__warn">缺少 API-KEY</span>
-              </div>
-
-              <div v-if="setupEndpoint && !setupEndpoint.hasKey" class="banner banner--error">
-                该服务商还没有 API-KEY。请到「设置 → 模型」补上，否则会话会因鉴权失败而无法使用。
-              </div>
-
-              <div class="field">
-                <label class="field__label" for="model">模型名覆盖（可选）</label>
-                <input
-                  id="model"
-                  v-model="model"
-                  class="field__input"
-                  spellcheck="false"
-                  placeholder="留空则用上面的选择"
-                />
-              </div>
-            </template>
-
-            <!-- No provider yet: manual entry, exactly as before. -->
-            <template v-else>
-              <div class="banner banner--info">
-                还没配置服务商：先去「设置 → 模型」添加，或在此手动填写端点与 Key。
-              </div>
-
-              <div class="field">
-                <label class="field__label" for="base">端点 Base URL</label>
-                <input id="base" v-model="baseUrl" class="field__input" spellcheck="false" />
-                <div class="field__hint">默认 {{ store.DEFAULT_BASE_URL }}</div>
-              </div>
-
-              <div class="field">
-                <label class="field__label" for="token">API Key</label>
-                <div class="field__row">
-                  <input
-                    id="token"
-                    v-model="token"
-                    class="field__input"
-                    :type="showCredential ? 'text' : 'password'"
-                    spellcheck="false"
-                    placeholder="sk-..."
-                  />
-                  <button class="btnGhost" type="button" @click="showCredential = !showCredential">
-                    {{ showCredential ? '隐藏' : '显示' }}
-                  </button>
-                </div>
-                <div class="field__hint">只随本次请求传给本地桥，不写入任何存储。</div>
-              </div>
-
-              <div class="field">
-                <label class="field__label" for="model">模型</label>
-                <input id="model" v-model="model" class="field__input" spellcheck="false" placeholder="留空由端点决定" />
-              </div>
-            </template>
-
-            <!-- One control for both branches: the choice is identical either way. -->
-            <div class="field">
-              <label class="field__label">权限模式</label>
-              <div class="permGrid">
-                <button
-                  v-for="preset in store.PERMISSION_PRESETS"
-                  :key="preset.id"
-                  class="permCard"
-                  :class="{
-                    'permCard--on': newSessionPresetId === preset.id,
-                    'permCard--danger': preset.dangerous,
-                  }"
-                  type="button"
-                  @click="newSessionPresetId = preset.id"
-                >
-                  <span class="permCard__top">
-                    <span class="permCard__label">{{ preset.label }}</span>
-                    <code class="permCard__mode">{{ preset.mode }}</code>
-                  </span>
-                  <span class="permCard__desc">{{ preset.description }}</span>
-                </button>
+                <input :value="defaultWorkspace" class="field__input" spellcheck="false" readonly />
+                <button class="btnGhost" type="button" @click="pickerOpen = true">浏览…</button>
               </div>
               <div class="field__hint">
-                新建的会话以该模式启动；会话开始后仍可在输入框里或「设置 → 权限」随时切换。
+                新会话直接在这里开始，不再让你每次重填。
+                <template v-if="recentProjects.length > 0">默认取最近使用的项目。</template>
+                <template v-else>目前没有历史项目，默认取主目录。</template>
               </div>
             </div>
 
-            <div v-if="startError" class="banner banner--error">{{ startError }}</div>
+            <div v-if="recentProjects.length > 1" class="recent">
+              <span class="recent__label">换个项目开始</span>
+              <button
+                v-for="project in recentProjects"
+                :key="project.path"
+                class="recent__item"
+                type="button"
+                :title="project.path"
+                @click="createSessionIn(project.path)"
+              >
+                {{ shortPath(project.path) }}
+              </button>
+            </div>
 
-            <button class="btnPrimary" type="button" :disabled="starting || !bridge.connected.value" @click="startSession">
-              <span v-if="starting" class="spinner" />
-              {{ starting ? '正在启动 claude.exe…' : '开始会话' }}
-            </button>
+            <div class="setup__actions">
+              <button
+                v-if="!hasBoundModel || boundModelMissingKey"
+                class="btnPrimary"
+                type="button"
+                @click="settingsOpen = true"
+              >
+                打开设置 · 绑定模型
+              </button>
+              <button
+                v-else
+                class="btnPrimary"
+                type="button"
+                :disabled="starting || !bridge.connected.value"
+                @click="createSessionIn(defaultWorkspace)"
+              >
+                <span v-if="starting" class="spinner" />
+                {{ starting ? '正在启动 claude.exe…' : '开始会话' }}
+              </button>
+            </div>
+
+            <div class="field__hint">
+              模型用默认服务商的第一个模型，权限模式用「设置 → 权限」里的默认值；
+              会话开始后两者都可以随时切换。
+            </div>
           </div>
         </div>
       </div>
@@ -699,7 +680,19 @@ function cancelSetup() {
               <path d="M6.5 3v10" stroke="currentColor" stroke-width="1.4" />
             </svg>
           </button>
-          <span class="topBar__title">{{ bridge.activeSession.value?.cwd ?? '未选择工作目录' }}</span>
+          <!--
+            The working directory is a button, not a label. With the setup form gone this is the only
+            place left to say "run the next session somewhere else" — and losing that would be a worse
+            trade than the form it replaced.
+          -->
+          <button
+            class="topBar__title topBar__title--action"
+            type="button"
+            title="切换工作目录（会在该目录下新建会话）"
+            @click="pickerOpen = true"
+          >
+            {{ bridge.activeSession.value?.cwd ?? '未选择工作目录' }}
+          </button>
           <span class="topBar__spacer" />
           <div class="tabs">
             <button class="tab" :class="{ 'tab--active': tab === 'chat' }" type="button" @click="tab = 'chat'">

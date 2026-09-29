@@ -148,14 +148,16 @@ const activePresetMode = computed(() => store.activePreset().mode)
 // --- models -----------------------------------------------------------------
 
 /**
- * The add-a-model form: exactly the three things an endpoint needs, plus whether to remember the key.
+ * The add-a-provider form: exactly the four things an endpoint needs, plus whether to remember the key.
  *
- * There is no provider-NAME field. A provider name is a label for an endpoint, and the user has no
- * opinion about it — asking for one is what produced a provider named `qwen3.8-flash`. It is derived
- * from the host instead, and an existing provider with the same host is REUSED rather than duplicated,
- * so adding two models on one endpoint does not create two providers.
+ * The name is optional and DERIVED FROM THE HOST when left empty — a provider name is a label for an
+ * endpoint and most users have no opinion about it, which is why it used to be derived silently. But
+ * deriving it and never letting it be edited is worse than asking: the host `api.deepseek.com` yields
+ * `deepseek` only by luck, and a self-hosted gateway yields something arbitrary. So it is a real
+ * field now, and leaving it blank still does the old thing.
  */
 interface ProviderDraft {
+  name: string
   model: string
   baseUrl: string
   apiKey: string
@@ -163,6 +165,7 @@ interface ProviderDraft {
 }
 
 const newProvider = ref<ProviderDraft>({
+  name: '',
   model: '',
   baseUrl: '',
   apiKey: '',
@@ -237,6 +240,9 @@ function saveProviderFromForm() {
   const baseUrl = newProvider.value.baseUrl.trim()
   const model = newProvider.value.model.trim()
   const apiKey = newProvider.value.apiKey.trim()
+  // A blank name still works: it falls back to the host-derived label, which is what the form did
+  // before the field existed.
+  const name = newProvider.value.name.trim() || providerNameFromUrl(baseUrl)
 
   // Saving without a passing test is allowed — an endpoint may be briefly down — but it is not silent.
   if (!testResult.value?.ok) {
@@ -259,14 +265,15 @@ function saveProviderFromForm() {
   })
 
   if (existing) {
-    // Key and URL are refreshed from what was just tested, so a corrected key updates in place.
-    store.updateProvider(existing.id, { baseUrl, apiKey, persistKey: newProvider.value.persistKey })
+    // Name, key and URL are refreshed from what was just typed, so a corrected value updates in
+    // place instead of requiring a delete-and-retype.
+    store.updateProvider(existing.id, { name, baseUrl, apiKey, persistKey: newProvider.value.persistKey })
     if (!existing.models.some((entry) => entry.model === model)) {
       store.addModel(existing.id, { model, label: '' })
     }
   } else {
     const created = store.addProvider({
-      name: providerNameFromUrl(baseUrl),
+      name,
       baseUrl,
       apiKey,
       persistKey: newProvider.value.persistKey,
@@ -275,8 +282,8 @@ function saveProviderFromForm() {
     store.addModel(created.id, { model, label: '' })
   }
 
-  // Clear the secret-looking fields; keep the URL so adding a second model is one field away.
-  newProvider.value = { model: '', baseUrl, apiKey: '', persistKey: newProvider.value.persistKey }
+  // Clear the secret-looking fields; keep name and URL so adding a second model is one field away.
+  newProvider.value = { name, model: '', baseUrl, apiKey: '', persistKey: newProvider.value.persistKey }
   resetTestState()
   showNewKey.value = false
 }
@@ -333,18 +340,32 @@ function toggleKey(id: string) {
 }
 
 /**
- * Vendor quick-fill. Fills the BASE-URL only — the model name and key are the user's to type, and
- * pre-filling a model name would be inventing a fact about their account.
+ * Vendor quick-fill. Fills the BASE-URL only where one was verified, and the NAME while that field is
+ * still empty — the model name and key stay the user's to type, because pre-filling a model would be
+ * inventing a fact about their account. The known model name is offered as a PLACEHOLDER instead,
+ * which suggests without asserting.
  */
 const newProviderPresetId = ref('')
 const baseUrlPlaceholder = computed(() => 'https://…/anthropic（Anthropic 兼容地址）')
+
+/** The selected platform's known model name, shown as a hint in the empty model field. */
+const modelPlaceholder = computed(() => {
+  const preset = store.VENDOR_PRESETS.find((entry) => entry.id === newProviderPresetId.value)
+  return preset?.modelHint ? `如 ${preset.modelHint}` : '如 deepseek-chat'
+})
 
 function applyVendorPreset(id: string) {
   newProviderPresetId.value = id
   if (id === 'custom') return
   const preset = store.VENDOR_PRESETS.find((entry) => entry.id === id)
   if (!preset) return
-  newProvider.value = { ...newProvider.value, baseUrl: preset.baseUrl }
+  newProvider.value = {
+    ...newProvider.value,
+    name: newProvider.value.name || preset.name,
+    // Several platforms are listed for their console link alone. Writing their empty baseUrl here
+    // would silently wipe an address the user had already typed.
+    baseUrl: preset.baseUrl || newProvider.value.baseUrl,
+  }
   resetTestState()
 }
 
@@ -511,33 +532,23 @@ const canAddModel = computed(() => store.settings.value.providers.length > 0)
               真正决定谁来回答的是端点。可以同时保存多个服务商。
             </p>
 
-            <div class="st__field">
-              <label class="st__label" for="defModel">新会话默认模型</label>
-              <select id="defModel" v-model="store.settings.value.defaultModelRef" class="st__select">
-                <option value="">跟随默认服务商（不指定 --model）</option>
-                <option
-                  v-for="option in store.modelOptions()"
-                  :key="option.ref"
-                  :value="option.ref"
-                >
-                  {{ option.label }} — {{ option.providerName }}
-                </option>
-              </select>
-              <p class="st__hint">仅影响新会话；运行中的会话在输入框的模型下拉里切换。</p>
-            </div>
+            <p class="st__hint" style="margin-top: 0">
+              新会话直接用<strong>默认服务商</strong>的第一个模型，不再单独设置「默认模型」——
+              标了「默认」的那个服务商就是在用的那个，两个地方各说一套正是上次对不上的原因。
+            </p>
 
             <!-- providers -->
             <div class="st__field">
               <label class="st__label">服务商</label>
               <p class="st__hint" style="margin-top: 0">
-                每个服务商需要 Anthropic 兼容的 Base URL 与 API-KEY；模型逐个添加。
-                会话按所选模型自动使用对应服务商的地址与 Key。
+                每个服务商需要服务商名称、Anthropic 兼容的 Base URL 与 API-KEY；模型逐个添加。
+                下面每一项都可以直接改，改完即刻生效，不用删掉重建。
               </p>
 
               <div v-for="provider in store.settings.value.providers" :key="provider.id" class="st__provider">
                 <div class="st__providerHead">
-                  <span class="st__providerName">{{ provider.name }}</span>
                   <span v-if="provider.isDefault" class="st__chipTag">默认</span>
+                  <span class="st__spacer" />
                   <button
                     v-if="!provider.isDefault"
                     class="st__link"
@@ -551,10 +562,40 @@ const canAddModel = computed(() => store.settings.value.providers.length > 0)
                   </button>
                 </div>
 
-                <code class="st__providerUrl">{{ provider.baseUrl }}</code>
-
-                <div class="st__row" style="margin-top: 8px">
+                <!--
+                  All four fields are editable IN PLACE. They used to be read-only text once a provider
+                  was saved, so the fields the user is asked to fill when creating one could not be
+                  corrected afterwards: a typo in the name, or an endpoint that moved, could only be
+                  fixed by deleting the provider and re-typing every model on it.
+                -->
+                <div class="st__row">
+                  <label class="st__fieldLabel" :for="`pname-${provider.id}`">服务商</label>
                   <input
+                    :id="`pname-${provider.id}`"
+                    :value="provider.name"
+                    class="st__input"
+                    spellcheck="false"
+                    placeholder="服务商名称，如 DeepSeek"
+                    @input="store.updateProvider(provider.id, { name: ($event.target as HTMLInputElement).value })"
+                  />
+                </div>
+
+                <div class="st__row">
+                  <label class="st__fieldLabel" :for="`purl-${provider.id}`">Base URL</label>
+                  <input
+                    :id="`purl-${provider.id}`"
+                    :value="provider.baseUrl"
+                    class="st__input"
+                    spellcheck="false"
+                    placeholder="https://…/anthropic（Anthropic 兼容地址）"
+                    @input="store.updateProvider(provider.id, { baseUrl: ($event.target as HTMLInputElement).value })"
+                  />
+                </div>
+
+                <div class="st__row">
+                  <label class="st__fieldLabel" :for="`pkey-${provider.id}`">API-KEY</label>
+                  <input
+                    :id="`pkey-${provider.id}`"
                     :value="provider.apiKey"
                     class="st__input"
                     :type="revealedKeys.has(provider.id) ? 'text' : 'password'"
@@ -577,6 +618,8 @@ const canAddModel = computed(() => store.settings.value.providers.length > 0)
                 <p v-if="!provider.persistKey" class="st__hint">
                   Key 默认不写入本地存储，重开应用需重新填写。
                 </p>
+
+                <label class="st__label" style="margin-top: 7px">模型名称</label>
 
                 <div v-if="provider.models.length > 0" class="st__modelList">
                   <div v-for="model in provider.models" :key="model.id" class="st__modelRow">
@@ -669,11 +712,14 @@ const canAddModel = computed(() => store.settings.value.providers.length > 0)
               </div>
 
               <!--
-                Add a model. THREE fields only — model name, API-KEY, Base-URL — because those are
-                exactly the three things an Anthropic-compatible endpoint needs to answer a request.
-                The previous flow made the user name a provider, then find a second row to add a model
-                to it; that split is where "the model never appeared" came from, and the provider name
-                is not something the user has an opinion about anyway (it is derived from the host).
+                Add a provider. FOUR fields — provider name, model name, Base URL, API-KEY — because
+                that is what has to be typed once to reach an Anthropic-compatible endpoint, and they
+                belong on one card rather than being split across a "create" step and a second step
+                that adds the first model.
+
+                The name is OPTIONAL and falls back to the host, because a name is only a label for an
+                endpoint — but leaving it unsettable is what produced a provider named after a model
+                (`qwen3.8-flash`) that could not be corrected once saved.
               -->
               <div class="st__provider st__provider--draft">
                 <div class="st__row st__row--tight">
@@ -683,26 +729,52 @@ const canAddModel = computed(() => store.settings.value.providers.length > 0)
                     title="用已核对过的端点快速填入 Base-URL"
                     @change="applyVendorPreset(($event.target as HTMLSelectElement).value)"
                   >
-                    <option value="">常用端点…</option>
+                    <option value="">常用平台…</option>
                     <option v-for="preset in store.VENDOR_PRESETS" :key="preset.id" :value="preset.id">
-                      {{ preset.name }}
+                      {{ preset.name }}{{ preset.baseUrl ? '' : '（地址需自查）' }}
                     </option>
                     <option value="custom">自定义</option>
                   </select>
-                  <span class="st__hint" style="margin: 0">选一个可自动填 Base-URL，也可以直接手填</span>
+                  <span class="st__hint" style="margin: 0">选已验证的平台可自动填 Base-URL，其余请照文档手填</span>
                 </div>
 
                 <div class="st__row">
+                  <label class="st__fieldLabel" for="np-name">服务商</label>
                   <input
-                    v-model="newProvider.model"
+                    id="np-name"
+                    v-model="newProvider.name"
                     class="st__input"
                     spellcheck="false"
-                    placeholder="模型名称，如 deepseek-chat"
+                    placeholder="服务商名称，留空则按 Base URL 自动命名"
                     @input="resetTestState"
                   />
                 </div>
                 <div class="st__row">
+                  <label class="st__fieldLabel" for="np-model">模型名称</label>
                   <input
+                    id="np-model"
+                    v-model="newProvider.model"
+                    class="st__input"
+                    spellcheck="false"
+                    :placeholder="modelPlaceholder"
+                    @input="resetTestState"
+                  />
+                </div>
+                <div class="st__row">
+                  <label class="st__fieldLabel" for="np-url">Base URL</label>
+                  <input
+                    id="np-url"
+                    v-model="newProvider.baseUrl"
+                    class="st__input"
+                    spellcheck="false"
+                    :placeholder="baseUrlPlaceholder"
+                    @input="resetTestState"
+                  />
+                </div>
+                <div class="st__row">
+                  <label class="st__fieldLabel" for="np-key">API-KEY</label>
+                  <input
+                    id="np-key"
                     v-model="newProvider.apiKey"
                     class="st__input"
                     :type="showNewKey ? 'text' : 'password'"
@@ -713,15 +785,6 @@ const canAddModel = computed(() => store.settings.value.providers.length > 0)
                   <button class="st__ghost" type="button" @click="showNewKey = !showNewKey">
                     {{ showNewKey ? '隐藏' : '显示' }}
                   </button>
-                </div>
-                <div class="st__row">
-                  <input
-                    v-model="newProvider.baseUrl"
-                    class="st__input"
-                    spellcheck="false"
-                    :placeholder="baseUrlPlaceholder"
-                    @input="resetTestState"
-                  />
                 </div>
 
                 <div class="st__row" style="margin-top: 4px">
@@ -759,6 +822,42 @@ const canAddModel = computed(() => store.settings.value.providers.length > 0)
                 <p v-else-if="saveWithoutTestWarning" class="st__hint st__hint--error">
                   还没测试过连接。保存后如果端点或 KEY 有误，会话会在第一次请求时报错 —— 建议先点「测试连接」。
                 </p>
+              </div>
+            </div>
+
+            <!--
+              Platform directory. Getting a KEY is the step that actually blocks a first run, and it
+              happens on a vendor's website — not inside this app — so the links are collected here
+              instead of leaving the user to search for the right console.
+            -->
+            <div class="st__field">
+              <label class="st__label">国内模型平台官网</label>
+              <p class="st__hint" style="margin-top: 0">
+                到任一平台注册并创建 API-KEY，回到上面的「新增服务商」填入即可直连。
+                标了「已验证地址」的平台会自动填好 Base-URL；其余只保证官网链接，
+                Anthropic 兼容地址请以该平台自己的文档为准。
+              </p>
+              <div class="st__vendors">
+                <div v-for="preset in store.VENDOR_PRESETS" :key="preset.id" class="st__vendor">
+                  <span class="st__vendorName">{{ preset.name }}</span>
+                  <span v-if="preset.baseUrl" class="st__chipTag">已验证地址</span>
+                  <span v-if="preset.note" class="st__vendorNote">{{ preset.note }}</span>
+                  <span class="st__spacer" />
+                  <a
+                    v-if="preset.consoleUrl"
+                    class="st__link"
+                    :href="preset.consoleUrl"
+                    target="_blank"
+                    rel="noreferrer"
+                  >开放平台 ↗</a>
+                  <a
+                    v-if="preset.docsUrl"
+                    class="st__link"
+                    :href="preset.docsUrl"
+                    target="_blank"
+                    rel="noreferrer"
+                  >文档 ↗</a>
+                </div>
               </div>
             </div>
 
@@ -1304,13 +1403,40 @@ const canAddModel = computed(() => store.settings.value.providers.length > 0)
   margin-left: 0;
 }
 
-.st__providerUrl {
-  display: block;
+/* A labelled input row: the label is a fixed gutter so the four fields line up. */
+.st__fieldLabel {
+  flex: none;
+  width: 62px;
+  color: var(--dsw-alias-label-caption);
+  font-size: 12px;
+}
+
+/* Platform directory: one row per vendor, links pushed right by the row's spacer. */
+.st__vendors {
+  display: grid;
+  gap: 4px;
+  margin-top: 6px;
+}
+
+.st__vendor {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 8px;
+  border-radius: 6px;
+  background: var(--dsw-alias-bg-layer-2);
+}
+
+.st__vendorName {
+  flex: none;
+  font-size: 12.5px;
+  font-weight: 600;
+}
+
+.st__vendorNote {
   min-width: 0;
-  margin-top: 3px;
   overflow: hidden;
   color: var(--dsw-alias-label-caption);
-  font-family: var(--dsw-font-family-code);
   font-size: 11px;
   text-overflow: ellipsis;
   white-space: nowrap;

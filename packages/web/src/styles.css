@@ -692,6 +692,26 @@ textarea {
   white-space: nowrap;
 }
 
+/*
+ * The same slot, as a button. It keeps the label's typography exactly — the directory is information
+ * first — and only reveals itself as clickable on hover.
+ */
+.topBar__title--action {
+  padding: 3px 7px;
+  border: 0.5px solid transparent;
+  border-radius: 7px;
+  background: transparent;
+  color: inherit;
+  font-family: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.topBar__title--action:hover {
+  border-color: var(--dsw-alias-border-l1);
+  background: var(--dsw-alias-interactive-bg-hover-solid);
+}
+
 .topBar__spacer {
   flex: 1;
 }
@@ -1507,6 +1527,18 @@ textarea {
 .setup__form {
   min-width: 0;
   padding: 16px 18px 14px;
+}
+
+/*
+ * Action row. The primary button is the only one that can be first: the placeholder screen either
+ * has something to start (one button) or has nothing bound (one button that opens settings), so
+ * these never compete for attention.
+ */
+.setup__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 14px;
 }
 
 /* In the split layout the rule moves to the vertical edge instead. */

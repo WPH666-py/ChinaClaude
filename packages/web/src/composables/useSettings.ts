@@ -340,6 +340,49 @@ export function parseModelRef(ref: string): { providerId: string; model: string 
   return { providerId: ref.slice(0, index), model: ref.slice(index + 2) }
 }
 
+/**
+ * One provider now holds exactly one model.
+ *
+ * A card in settings IS a (provider, model) binding, so a provider carrying several models has no
+ * coherent editor: two cards would be writing to the same record, and editing the endpoint in one
+ * would silently change the other. Older builds COULD create those — the add form reused a provider
+ * by host and appended models to it — so they are SPLIT here rather than dropped. Every model
+ * survives, each becoming its own card that shares the endpoint and key it was configured with,
+ * which is exactly what the user would have typed into a second card anyway.
+ */
+function splitOneModelPerCard(providers: Provider[]): Provider[] {
+  const out: Provider[] = []
+  for (const provider of providers) {
+    if (provider.models.length <= 1) {
+      out.push(provider)
+      continue
+    }
+    provider.models.forEach((model, index) => {
+      out.push({
+        ...provider,
+        id: index === 0 ? provider.id : crypto.randomUUID(),
+        // Only the original keeps "default": the copies are new records, not new defaults.
+        isDefault: index === 0 ? provider.isDefault : false,
+        models: [model],
+      })
+    })
+  }
+  return out
+}
+
+/**
+ * Drop cards that were created with 「+ 新建」 and then abandoned.
+ *
+ * A new card is a real record the moment it appears — that is what makes it visible and editable —
+ * so without this an empty one would persist forever and reappear on every launch. A card is a stub
+ * only when it has NO model and no endpoint and no name; anything the user actually typed is kept.
+ */
+function dropCardStubs(providers: Provider[]): Provider[] {
+  return providers.filter(
+    (provider) => provider.models.length > 0 || provider.baseUrl.trim() !== '' || provider.name.trim() !== '',
+  )
+}
+
 function load(): Settings {
   const base = defaults()
   try {
@@ -358,12 +401,16 @@ function load(): Settings {
       ...base,
       ...parsed,
       // Normalise the shapes that corrupt most easily on load.
-      providers: providers.map((provider) => ({
-        ...provider,
-        apiKey: typeof provider.apiKey === 'string' ? provider.apiKey : '',
-        persistKey: provider.persistKey === true,
-        models: Array.isArray(provider.models) ? provider.models : [],
-      })),
+      providers: dropCardStubs(
+        splitOneModelPerCard(
+          providers.map((provider) => ({
+            ...provider,
+            apiKey: typeof provider.apiKey === 'string' ? provider.apiKey : '',
+            persistKey: provider.persistKey === true,
+            models: Array.isArray(provider.models) ? provider.models : [],
+          })),
+        ),
+      ),
       /**
        * Rates are coerced to numbers because they arrive from text inputs. A NaN here would
        * propagate into a NaN total, and `priceEvents` would then report a priced turn whose cost is
@@ -496,8 +543,14 @@ export function useSettings() {
    */
   function defaultModelOption(): ModelOption | null {
     const provider = defaultProvider()
-    if (!provider) return null
-    return modelOptions().find((option) => option.providerId === provider.id) ?? null
+    const fromDefault = provider
+      ? modelOptions().find((option) => option.providerId === provider.id)
+      : undefined
+    if (fromDefault) return fromDefault
+    // The named default can be a card that was created but never saved, or whose model was cleared —
+    // neither means "nothing is bound". Falling through to the first usable card keeps an empty draft
+    // from making a fully configured app look unconfigured.
+    return modelOptions()[0] ?? null
   }
 
   function addProvider(provider: Omit<Provider, 'id'>) {
@@ -565,15 +618,28 @@ export function useSettings() {
     })
   }
 
-  function addModel(providerId: string, model: Omit<ProviderModel, 'id'>) {
-    const provider = providerById(providerId)
-    if (provider) provider.models.push({ ...model, id: crypto.randomUUID() })
-  }
-
-  function removeModel(providerId: string, modelId: string) {
+  /**
+   * Set the single model a provider serves.
+   *
+   * One model per provider is the shape the settings cards assume, so this REPLACES rather than
+   * appends. The `models` array is kept (instead of collapsing to a scalar field) so the picker, the
+   * balance lookup and the bridge's wire shape are all untouched by that decision.
+   *
+   * The model's own `id` and pinned `effort` carry over on an edit: re-typing a name is not a request
+   * to forget which reasoning level was chosen for it.
+   */
+  function setProviderModel(providerId: string, model: string, label = '', effort?: string) {
     const provider = providerById(providerId)
     if (!provider) return
-    provider.models = provider.models.filter((model) => model.id !== modelId)
+    const previous = provider.models[0]
+    provider.models = [
+      {
+        id: previous?.id ?? crypto.randomUUID(),
+        model,
+        label: label || previous?.label || '',
+        effort: effort !== undefined ? effort || undefined : previous?.effort,
+      },
+    ]
   }
 
   /** Pin a reasoning effort to one model; an empty level restores the CLI's model default. */
@@ -606,9 +672,8 @@ export function useSettings() {
     updatePriceTable,
     removePriceTable,
     seedPriceTable,
-    addModel,
+    setProviderModel,
     setModelEffort,
-    removeModel,
     reset,
   }
 }

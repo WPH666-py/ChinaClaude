@@ -42,6 +42,23 @@ const tab = ref<'chat' | 'trace'>('chat')
 /** Set when the user explicitly asks for a new session, so polling never overrides it. */
 const setupPinnedByUser = ref(false)
 
+/**
+ * Reasoning effort of the running session; '' means the model's own default.
+ *
+ * Mirrored into a ref rather than read straight off the session object: an effort change relaunches
+ * the child, so the level the user just picked leads the session by a moment, and the picker must not
+ * snap back to the old one while the restart is in flight.
+ */
+const sessionEffort = ref('')
+
+watch(
+  () => bridge.activeSession.value?.effort ?? '',
+  (value) => {
+    sessionEffort.value = value ?? ''
+  },
+  { immediate: true },
+)
+
 const binaryPath = computed(() => bridge.discovery.value?.binary?.path ?? null)
 const binaryMissing = computed(() => bridge.discovery.value !== null && binaryPath.value === null)
 
@@ -295,6 +312,11 @@ async function onChangeMode(mode: string) {
  * The event carries a "providerId::model" reference because a model name alone does not identify
  * an endpoint. Same provider -> in-session control request. Different provider -> the bridge
  * restarts the child against the new endpoint and resumes the conversation.
+ *
+ * `effort` is deliberately NOT sent: it is a session-level choice the user makes in the composer, so
+ * a model switch must carry it across rather than reset it. The bridge leaves it untouched when the
+ * field is absent — and it used to be sent as the model's own pinned level, which since effort moved
+ * out of settings is always empty, meaning every model switch silently cleared it.
  */
 async function onChangeModel(ref: string) {
   try {
@@ -310,11 +332,32 @@ async function onChangeModel(ref: string) {
     await bridge.setModel(option.model, {
       baseUrl: option.baseUrl,
       apiKey: option.apiKey,
-      // The level is pinned to the model, so switching models switches effort with it. The bridge
-      // only relaunches when the level actually differs from the running child's.
-      effort: option.effort,
     })
   } catch (error) {
+    startError.value = String((error as Error).message ?? error)
+  }
+}
+
+/**
+ * Switching the running session's reasoning effort.
+ *
+ * No endpoint or credential is sent: an effort change must not move the session to a different
+ * provider, and the bridge leaves both alone when they are absent. What it does do is relaunch the
+ * child, because `--effort` is a spawn argument with no control request behind it — the conversation
+ * is resumed rather than lost, and the composer says so next to the choices.
+ *
+ * The value is set optimistically because the relaunch takes a moment, and the watch on the session
+ * reconciles it if the bridge reports something else.
+ */
+async function onChangeEffort(level: string) {
+  const session = bridge.activeSession.value
+  if (!session) return
+  const previous = sessionEffort.value
+  sessionEffort.value = level
+  try {
+    await bridge.setModel(session.model ?? '', { effort: level })
+  } catch (error) {
+    sessionEffort.value = previous
     startError.value = String((error as Error).message ?? error)
   }
 }
@@ -741,6 +784,7 @@ function newSession() {
           :awaiting-dialog="bridge.pendingDialogs.value.length > 0"
           :model="bridge.activeSession.value?.model ?? ''"
           :permission-mode="bridge.activeSession.value?.permissionMode ?? ''"
+          :effort="sessionEffort"
           :catalog-models="bridge.catalog.value?.models ?? []"
           :resolved-model="bridge.catalog.value?.resolvedModel ?? null"
           :has-credentials="bridge.activeSession.value?.hasCredential === true"
@@ -748,6 +792,7 @@ function newSession() {
           @stop="bridge.stopSession()"
           @change-mode="onChangeMode"
           @change-model="onChangeModel"
+          @change-effort="onChangeEffort"
           @open-settings="settingsOpen = true"
         />
       </template>

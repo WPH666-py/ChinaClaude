@@ -70,9 +70,11 @@ export interface ProviderModel {
   /**
    * Reasoning effort pinned to this model, or empty for the CLI's model default.
    *
-   * Per MODEL rather than per session because that is how it is actually chosen: effort is a
-   * property of how much thinking a given model should do, and the same user wants `max` on a
-   * slow flagship and nothing at all on a cheap one.
+   * NO LONGER SET FROM SETTINGS. Effort is chosen per SESSION in the composer now, because it is
+   * something a user changes while working rather than once while configuring — a level baked into a
+   * saved card could only be changed by deleting the card and building a new one. The field is kept
+   * (and preserved across edits) so a stored level from an earlier build still seeds the session it
+   * is used to start, and so the wire shape does not change.
    */
   effort?: string
 }
@@ -642,12 +644,6 @@ export function useSettings() {
     ]
   }
 
-  /** Pin a reasoning effort to one model; an empty level restores the CLI's model default. */
-  function setModelEffort(providerId: string, modelId: string, effort: string) {
-    const model = providerById(providerId)?.models.find((entry) => entry.id === modelId)
-    if (model) model.effort = effort || undefined
-  }
-
   function reset() {
     settings.value = defaults()
   }
@@ -673,7 +669,6 @@ export function useSettings() {
     removePriceTable,
     seedPriceTable,
     setProviderModel,
-    setModelEffort,
     reset,
   }
 }

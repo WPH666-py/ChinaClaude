@@ -128,6 +128,13 @@ export interface SessionView {
   /** What the CLI reports it is actually running, which may differ from `model`. */
   resolvedModel?: string | null
   permissionMode: string | null
+  /**
+   * Reasoning effort the CLI child was spawned with, or null for the model default.
+   *
+   * Session state rather than a setting: the composer switches it live, and an effort change
+   * relaunches the child (it is a `--effort` argument) while resuming the same conversation.
+   */
+  effort?: string | null
   baseUrl: string
   /**
    * The endpoint this session's child process was started against.

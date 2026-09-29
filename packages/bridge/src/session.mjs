@@ -697,7 +697,16 @@ export class ClaudeSession extends EventEmitter {
     this.seq = 0
     this.history.length = 0
 
-    this.options.baseUrl = next.baseUrl ?? this.options.baseUrl
+    /**
+     * An EMPTY baseUrl means "leave it", not "clear it".
+     *
+     * The caller passes `''` whenever it is changing something else — an effort-only change sends no
+     * endpoint at all — and `'' ?? x` is `''`, so the nullish default did NOT protect this. The
+     * result was a session restarted with no endpoint, silently sending the next turn to Anthropic's
+     * default instead of the provider the user configured. A falsy URL is never a valid target, so
+     * only a real one is applied.
+     */
+    if (next.baseUrl) this.options.baseUrl = next.baseUrl
     // `undefined` means "leave the credential alone"; an explicit empty string clears it.
     if (next.authToken !== undefined) this.options.authToken = next.authToken
     this.options.model = next.model ?? this.options.model
@@ -977,6 +986,14 @@ export class ClaudeSession extends EventEmitter {
       /** What the CLI reports it is actually running, for the model picker's marker. */
       resolvedModel: this.resolvedModel,
       permissionMode: this.options.permissionMode ?? null,
+      /**
+       * Reasoning effort this session's child was spawned with, or null for the model default.
+       *
+       * Reported because it is a SESSION property, not a settings one: the composer lets the user
+       * change it at any moment, and a control that cannot show the current level would be asking
+       * the user to remember what they last picked.
+       */
+      effort: this.options.effort ?? null,
       baseUrl: this.options.baseUrl ?? DEFAULT_BASE_URL,
       /**
        * Which endpoint this session's child process is talking to. The UI compares it against

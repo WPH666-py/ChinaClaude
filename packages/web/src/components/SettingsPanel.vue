@@ -8,9 +8,9 @@
  * Nothing here stores an API key. A key is supplied per session and lives only in the bridge's
  * child process, so this page can never leak one.
  */
-import { computed, ref, watch } from 'vue'
+import { computed, ref } from 'vue'
 import type { Catalog, TranscriptSummary } from '../types'
-import { useSettings, PERMISSION_PRESETS, PERMISSION_CONFIRM, EFFORT_LEVELS } from '../composables/useSettings'
+import { useSettings, PERMISSION_PRESETS, PERMISSION_CONFIRM } from '../composables/useSettings'
 import type { Bridge } from '../composables/useBridge'
 import BundledPanel from './BundledPanel.vue'
 import ImportPanel from './ImportPanel.vue'
@@ -148,170 +148,114 @@ const activePresetMode = computed(() => store.activePreset().mode)
 // --- models -----------------------------------------------------------------
 
 /**
- * One settings card = one usable model.
+ * Settings → 模型 is a list of cards, and each card is ONE usable model.
  *
- * The card IS the unit of configuration: 服务商 / 模型名称 / Base URL / API-KEY in one place, with an
- * explicit 保存 and 删除. That is deliberately flatter than the provider-then-models structure it
- * replaces, where creating a provider and adding its first model were two steps in two separate
- * places — which is where "新建选项卡没有显示在前端" came from: the save button stayed disabled until
- * three fields happened to be filled, and a disabled button explains nothing about why.
+ * A card is created with 「+ 新建」, filled in and saved — and once saved it is READ-ONLY, with 删除
+ * as its only action. That asymmetry is the point: a saved card has exactly one representation in the
+ * store, so nothing on screen can disagree with what a session will use, and "which card is the real
+ * one" never becomes a question. Editing in place, by contrast, needed a draft per card, a dirty
+ * marker, and a save that could silently not have run.
  *
- * EDITS ARE DRAFTS. Typing only changes the local draft; nothing reaches the store until 保存. A card
- * whose draft differs from what is stored is marked 未保存, so "did that take effect" is answerable by
- * looking rather than by remembering whether the button was pressed.
+ * The four fields are exactly what an Anthropic-compatible endpoint needs to answer a request.
+ * Everything that used to sit beside them is gone on purpose:
+ *   - 常用平台 duplicated the 服务商 choice — a vendor IS the platform — so 服务商 is the dropdown now,
+ *     and picking one still fills the verified Base URL.
+ *   - 推理挡位 moved to the COMPOSER, where it can be changed mid-conversation instead of only at
+ *     card-creation time.
+ *   - The key-visibility toggle and the balance-endpoint override were knobs a first run never touches.
  */
 interface CardDraft {
+  /** Selected platform preset, '' for none, or 'custom'. Drives the name and the Base URL. */
+  presetId: string
   name: string
   model: string
   baseUrl: string
   apiKey: string
-  persistKey: boolean
-  /** Reasoning effort pinned to this model; empty means the CLI's own default. */
-  effort: string
 }
 
-/** A provider carries exactly one model now, so a draft is seeded from the first (and only) one. */
-function draftFrom(provider: {
-  name: string
-  baseUrl: string
-  apiKey: string
-  persistKey: boolean
-  models: Array<{ model: string; effort?: string }>
-}): CardDraft {
-  return {
-    name: provider.name,
-    model: provider.models[0]?.model ?? '',
-    baseUrl: provider.baseUrl,
-    apiKey: provider.apiKey,
-    persistKey: provider.persistKey,
-    effort: provider.models[0]?.effort ?? '',
-  }
-}
-
-const drafts = ref<Record<string, CardDraft>>({})
-/** Per-card save rejection, so a 保存 that did nothing is never silent. */
-const saveErrors = ref<Record<string, string>>({})
-/** Per-card connection test result, tagged with the values it was actually run against. */
-const testResults = ref<Record<string, { ok: boolean; message: string; signature: string }>>({})
-const testingId = ref<string | null>(null)
-/** Which platform preset each card's dropdown shows; drives the model-name placeholder only. */
-const cardPreset = ref<Record<string, string>>({})
-const revealedKeys = ref<Set<string>>(new Set())
+/**
+ * The one in-progress card, or null.
+ *
+ * Deliberately NOT in the store until 保存: a card that is visible but unsaved is a record the rest
+ * of the app cannot see, and keeping it out of `providers` means an abandoned draft leaves nothing
+ * behind — no stub to prune on the next launch, and no half-filled entry for the composer to trip on.
+ */
+const draft = ref<CardDraft | null>(null)
+const testing = ref(false)
+/** The draft's connection-test result, or why a save was refused. Never both. */
+const draftMessage = ref<{ ok: boolean; text: string } | null>(null)
 
 /** Catalog models the CLI reported. Anthropic's names, listed for context only. */
 const catalogModels = computed(() => props.catalog?.models ?? [])
 
-/**
- * Keep exactly one draft per stored card.
- *
- * Seeded eagerly rather than lazily from the template: `v-model` needs a target that already exists,
- * and creating records during render is the kind of side effect that works until it does not.
- */
-function seedDrafts() {
-  const seen = new Set<string>()
-  for (const provider of store.settings.value.providers) {
-    seen.add(provider.id)
-    if (!drafts.value[provider.id]) drafts.value[provider.id] = draftFrom(provider)
-  }
-  for (const id of Object.keys(drafts.value)) {
-    if (!seen.has(id)) {
-      delete drafts.value[id]
-      delete saveErrors.value[id]
-      delete testResults.value[id]
-      delete cardPreset.value[id]
-    }
-  }
+const baseUrlPlaceholder = 'https://…/anthropic（Anthropic 兼容地址）'
+
+function startDraft() {
+  draft.value = { presetId: '', name: '', model: '', baseUrl: '', apiKey: '' }
+  draftMessage.value = null
 }
 
-seedDrafts()
-// Keyed on the ID LIST, not on the cards: editing a field must not re-seed (and so discard) the draft.
-watch(() => store.settings.value.providers.map((provider) => provider.id).join('\u0000'), seedDrafts)
-
-/** Identity of the values a test result is about; the result stops applying the moment they change. */
-function signatureOf(draft: CardDraft): string {
-  return `${draft.baseUrl.trim()}\u0000${draft.apiKey.trim()}\u0000${draft.model.trim()}`
-}
-
-/** The test result for a card, but only while it still describes what is in the fields. */
-function liveTestResult(providerId: string) {
-  const result = testResults.value[providerId]
-  const draft = drafts.value[providerId]
-  if (!result || !draft || result.signature !== signatureOf(draft)) return null
-  return result
-}
-
-/** Whether a card holds edits that have not been saved. */
-function isDirty(providerId: string): boolean {
-  const provider = store.providerById(providerId)
-  const draft = drafts.value[providerId]
-  if (!provider || !draft) return false
-  return (
-    draft.name !== provider.name ||
-    draft.baseUrl !== provider.baseUrl ||
-    draft.apiKey !== provider.apiKey ||
-    draft.persistKey !== provider.persistKey ||
-    draft.model !== (provider.models[0]?.model ?? '') ||
-    draft.effort !== (provider.models[0]?.effort ?? '')
-  )
-}
-
-/** Append an empty card, ready to fill. It is a real record so that it is visible and editable. */
-function addCard() {
-  const created = store.addProvider({ name: '', baseUrl: '', apiKey: '', persistKey: false, models: [] })
-  drafts.value[created.id] = { name: '', model: '', baseUrl: '', apiKey: '', persistKey: false, effort: '' }
-}
-
-function removeCard(providerId: string) {
-  store.removeProvider(providerId)
-  // Drop the view state here too: `seedDrafts` would catch it on the next id change, but until then the
-  // card would keep rendering its old values.
-  delete drafts.value[providerId]
-  delete saveErrors.value[providerId]
-  delete testResults.value[providerId]
-  delete cardPreset.value[providerId]
+function cancelDraft() {
+  draft.value = null
+  draftMessage.value = null
 }
 
 /**
- * Save one card.
+ * Apply the chosen platform.
  *
- * A missing API-KEY does NOT block the save: an endpoint can be configured before its key is issued,
- * and the placeholder screen already reports 缺少 API-KEY for exactly that state. A missing model name
- * or Base URL DOES block — without them there is no endpoint to call, so the card would be a record
- * that can never work.
+ * Fills the NAME, and the Base URL ONLY where one was verified. Several platforms are listed for
+ * their console link alone, and writing their empty address here would silently wipe what the user
+ * had already typed. The model name and key stay the user's to type — pre-filling a model would be
+ * inventing a fact about their account — so a known model name is offered as a PLACEHOLDER instead,
+ * which suggests without asserting.
  */
-function saveCard(providerId: string) {
-  const draft = drafts.value[providerId]
-  if (!draft) return
-
-  const model = draft.model.trim()
-  const baseUrl = draft.baseUrl.trim()
-  const missing: string[] = []
-  if (!model) missing.push('模型名称')
-  if (!baseUrl) missing.push('Base URL')
-  if (missing.length > 0) {
-    saveErrors.value[providerId] = `请先填写：${missing.join('、')}`
+function applyPreset() {
+  const current = draft.value
+  if (!current) return
+  draftMessage.value = null
+  if (!current.presetId) return
+  if (current.presetId === 'custom') {
+    current.name = ''
     return
   }
-  delete saveErrors.value[providerId]
-
-  // A blank name still works: it falls back to the host-derived label.
-  const name = draft.name.trim() || providerNameFromUrl(baseUrl)
-  store.updateProvider(providerId, {
-    name,
-    baseUrl,
-    apiKey: draft.apiKey.trim(),
-    persistKey: draft.persistKey,
-  })
-  store.setProviderModel(providerId, model, '', draft.effort)
-
-  // Write back what was actually stored, so 未保存 clears even when a value was trimmed or derived.
-  draft.name = name
-  draft.model = model
-  draft.baseUrl = baseUrl
-  draft.apiKey = draft.apiKey.trim()
+  const preset = store.VENDOR_PRESETS.find((entry) => entry.id === current.presetId)
+  if (!preset) return
+  current.name = preset.name
+  if (preset.baseUrl) current.baseUrl = preset.baseUrl
 }
 
-/** A readable provider name from the host, used when the name field is left empty. */
+const draftModelPlaceholder = computed(() => {
+  const preset = store.VENDOR_PRESETS.find((entry) => entry.id === draft.value?.presetId)
+  return preset?.modelHint ? `如 ${preset.modelHint}` : '如 deepseek-chat'
+})
+
+/** A connection test exercises the endpoint, the key and the model — all three are required for it. */
+const canTestDraft = computed(() => {
+  const current = draft.value
+  return Boolean(current && current.model.trim() && current.baseUrl.trim() && current.apiKey.trim())
+})
+
+async function runConnectionTest() {
+  const current = draft.value
+  if (!current || !canTestDraft.value) return
+  testing.value = true
+  draftMessage.value = null
+  try {
+    // The bridge makes the call: the page cannot reach a vendor that sends no CORS headers.
+    const result = await props.bridge.testConnection({
+      baseUrl: current.baseUrl.trim(),
+      apiKey: current.apiKey.trim(),
+      model: current.model.trim(),
+    })
+    draftMessage.value = { ok: result.ok, text: result.message }
+  } catch (error) {
+    draftMessage.value = { ok: false, text: String((error as Error).message ?? error) }
+  } finally {
+    testing.value = false
+  }
+}
+
+/** A readable provider name from the host, used when 自定义 leaves the name empty. */
 function providerNameFromUrl(baseUrl: string): string {
   try {
     const host = new URL(baseUrl.trim()).host.replace(/^www\./, '')
@@ -328,69 +272,50 @@ function providerNameFromUrl(baseUrl: string): string {
   }
 }
 
-function toggleKey(id: string) {
-  const next = new Set(revealedKeys.value)
-  if (next.has(id)) next.delete(id)
-  else next.add(id)
-  revealedKeys.value = next
-}
-
-/** A connection test needs the endpoint, the key and the model — all three are what it exercises. */
-function canTestCard(providerId: string): boolean {
-  const draft = drafts.value[providerId]
-  return Boolean(draft && draft.model.trim() && draft.baseUrl.trim() && draft.apiKey.trim())
-}
-
-async function runConnectionTest(providerId: string) {
-  const draft = drafts.value[providerId]
-  if (!draft || !canTestCard(providerId)) return
-  const signature = signatureOf(draft)
-  testingId.value = providerId
-  delete testResults.value[providerId]
-  try {
-    // The bridge makes the call: the page cannot reach a vendor that sends no CORS headers.
-    const result = await props.bridge.testConnection({
-      baseUrl: draft.baseUrl.trim(),
-      apiKey: draft.apiKey.trim(),
-      model: draft.model.trim(),
-    })
-    testResults.value[providerId] = { ...result, signature }
-  } catch (error) {
-    testResults.value[providerId] = {
-      ok: false,
-      message: String((error as Error).message ?? error),
-      signature,
-    }
-  } finally {
-    testingId.value = null
-  }
-}
-
 /**
- * Platform quick-fill for one card.
+ * Save the draft.
  *
- * Fills the NAME while that field is empty and the BASE-URL only where one was verified. The model
- * name and key stay the user's to type — pre-filling a model would be inventing a fact about their
- * account — so the known model name is offered as a PLACEHOLDER instead, which suggests without
- * asserting.
+ * A missing API-KEY does NOT block the save: an endpoint can be configured before its key is issued,
+ * and the shell already reports 缺少 API-KEY for exactly that state. A missing model name or Base URL
+ * DOES block, and the reason is STATED — a disabled button explains nothing about why, which is how
+ * "保存之后什么都没出现" happened before.
  */
-const baseUrlPlaceholder = 'https://…/anthropic（Anthropic 兼容地址）'
+function saveDraft() {
+  const current = draft.value
+  if (!current) return
 
-function modelPlaceholder(providerId: string): string {
-  const preset = store.VENDOR_PRESETS.find((entry) => entry.id === cardPreset.value[providerId])
-  return preset?.modelHint ? `如 ${preset.modelHint}` : '如 deepseek-chat'
+  const model = current.model.trim()
+  const baseUrl = current.baseUrl.trim()
+  const missing: string[] = []
+  if (!model) missing.push('模型名称')
+  if (!baseUrl) missing.push('Base URL')
+  if (missing.length > 0) {
+    draftMessage.value = { ok: false, text: `请先填写：${missing.join('、')}` }
+    return
+  }
+
+  const created = store.addProvider({
+    name: current.name.trim() || providerNameFromUrl(baseUrl),
+    baseUrl,
+    apiKey: current.apiKey.trim(),
+    /**
+     * The key IS written to this machine's localStorage.
+     *
+     * There is no 记住到本机 checkbox any more, and a key that vanished on every restart would make
+     * the app unusable rather than safer: the card is stored locally either way, so the only thing
+     * the old flag changed was whether the user had to re-type their credential every launch.
+     */
+    persistKey: true,
+    models: [],
+  })
+  store.setProviderModel(created.id, model)
+
+  draft.value = null
+  draftMessage.value = null
 }
 
-function applyVendorPreset(providerId: string, id: string) {
-  cardPreset.value[providerId] = id
-  if (id === 'custom') return
-  const preset = store.VENDOR_PRESETS.find((entry) => entry.id === id)
-  const draft = drafts.value[providerId]
-  if (!preset || !draft) return
-  draft.name = draft.name || preset.name
-  // Several platforms are listed for their console link alone. Writing their empty baseUrl here would
-  // silently wipe an address the user had already typed.
-  if (preset.baseUrl) draft.baseUrl = preset.baseUrl
+function removeSaved(providerId: string) {
+  store.removeProvider(providerId)
 }
 </script>
 
@@ -546,7 +471,6 @@ function applyVendorPreset(providerId: string, id: string) {
           </template>
 
           <!-- models -->
-          <!-- models -->
           <template v-else-if="section === 'models'">
             <h3 class="st__h">模型</h3>
             <p class="st__sub">
@@ -554,108 +478,23 @@ function applyVendorPreset(providerId: string, id: string) {
               真正决定谁来回答的是端点。
             </p>
 
-            <p class="st__hint" style="margin-top: 0">
-              一张选项卡就是一条可用的模型配置：<strong>服务商、模型名称、Base URL、API-KEY</strong>
-              四项填完点「保存」才生效，点「删除」即移除该模型。新会话用<strong>默认选项卡</strong>
-              的那一条 —— 标了「默认」的就是在用的那张，不再有第二个地方单独设置「默认模型」。
-            </p>
-
             <div class="st__cardsHead">
               <span class="st__label" style="margin: 0">模型选项卡</span>
               <span class="st__spacer" />
-              <button class="st__ghost" type="button" @click="addCard">+ 新建</button>
+              <button class="st__ghost" type="button" :disabled="draft !== null" @click="startDraft">
+                + 新建
+              </button>
             </div>
 
-            <p v-if="store.settings.value.providers.length === 0" class="st__empty">
-              还没有任何模型。点右上角「+ 新建」，把这四项填上再点保存，就能开始用了。
-            </p>
-
-            <div
-              v-for="provider in store.settings.value.providers"
-              :key="provider.id"
-              class="st__provider"
-              :class="{ 'st__provider--dirty': isDirty(provider.id) }"
-            >
-              <div class="st__providerHead">
-                <span v-if="provider.isDefault" class="st__chipTag">默认</span>
-                <span v-if="isDirty(provider.id)" class="st__chipTag st__chipTag--dirty">未保存</span>
-                <span class="st__spacer" />
-                <button
-                  v-if="!provider.isDefault"
-                  class="st__link"
-                  type="button"
-                  @click="store.setDefaultProvider(provider.id)"
-                >
-                  设为默认
-                </button>
-                <button
-                  class="st__ghost st__ghost--sm"
-                  :class="{ 'st__ghost--on': isDirty(provider.id) }"
-                  type="button"
-                  :disabled="!isDirty(provider.id)"
-                  @click="saveCard(provider.id)"
-                >
-                  保存
-                </button>
-                <button class="st__link st__link--danger" type="button" @click="removeCard(provider.id)">
-                  删除
-                </button>
-              </div>
-
-              <!--
-                The four fields, all editable in place. Nothing here writes to the store on input: the
-                card IS a small form, and 保存 is what commits it.
-              -->
+            <!--
+              The draft: the ONLY editable card, and the only way one is created. Four fields, three
+              buttons, nothing else.
+            -->
+            <div v-if="draft" class="st__provider st__provider--draft">
               <div class="st__row">
-                <label class="st__fieldLabel" :for="`name-${provider.id}`">服务商</label>
-                <input
-                  :id="`name-${provider.id}`"
-                  v-model="drafts[provider.id].name"
-                  class="st__input"
-                  spellcheck="false"
-                  placeholder="服务商名称，留空则按 Base URL 自动命名"
-                />
-              </div>
-
-              <div class="st__row">
-                <label class="st__fieldLabel" :for="`model-${provider.id}`">模型名称</label>
-                <input
-                  :id="`model-${provider.id}`"
-                  v-model="drafts[provider.id].model"
-                  class="st__input"
-                  spellcheck="false"
-                  :placeholder="modelPlaceholder(provider.id)"
-                />
-                <!--
-                  Reasoning effort. Applies when a session STARTS on this model: the CLI takes it as a
-                  `--effort` argument and has no control request for it, so changing it mid-session
-                  relaunches the child (the conversation is resumed, not lost).
-                -->
-                <label class="st__effort" title="推理挡位（该模型启动会话时生效）">
-                  <span class="st__effortLabel">推理挡位</span>
-                  <select v-model="drafts[provider.id].effort" class="st__input st__input--effort">
-                    <option value="">默认</option>
-                    <option v-for="level in EFFORT_LEVELS" :key="level" :value="level">{{ level }}</option>
-                  </select>
-                </label>
-              </div>
-
-              <div class="st__row">
-                <label class="st__fieldLabel" :for="`url-${provider.id}`">Base URL</label>
-                <input
-                  :id="`url-${provider.id}`"
-                  v-model="drafts[provider.id].baseUrl"
-                  class="st__input"
-                  spellcheck="false"
-                  :placeholder="baseUrlPlaceholder"
-                />
-                <select
-                  class="st__select st__input--narrow"
-                  :value="cardPreset[provider.id] ?? ''"
-                  title="用已核对过的端点快速填入 Base-URL"
-                  @change="applyVendorPreset(provider.id, ($event.target as HTMLSelectElement).value)"
-                >
-                  <option value="">常用平台…</option>
+                <label class="st__fieldLabel" for="draft-provider">服务商</label>
+                <select id="draft-provider" v-model="draft.presetId" class="st__select" @change="applyPreset">
+                  <option value="">请选择…</option>
                   <option v-for="preset in store.VENDOR_PRESETS" :key="preset.id" :value="preset.id">
                     {{ preset.name }}{{ preset.baseUrl ? '' : '（地址需自查）' }}
                   </option>
@@ -664,90 +503,77 @@ function applyVendorPreset(providerId: string, id: string) {
               </div>
 
               <div class="st__row">
-                <label class="st__fieldLabel" :for="`key-${provider.id}`">API-KEY</label>
+                <label class="st__fieldLabel" for="draft-model">模型名称</label>
                 <input
-                  :id="`key-${provider.id}`"
-                  v-model="drafts[provider.id].apiKey"
+                  id="draft-model"
+                  v-model="draft.model"
                   class="st__input"
-                  :type="revealedKeys.has(provider.id) ? 'text' : 'password'"
+                  spellcheck="false"
+                  :placeholder="draftModelPlaceholder"
+                />
+              </div>
+
+              <div class="st__row">
+                <label class="st__fieldLabel" for="draft-url">Base URL</label>
+                <input
+                  id="draft-url"
+                  v-model="draft.baseUrl"
+                  class="st__input"
+                  spellcheck="false"
+                  :placeholder="baseUrlPlaceholder"
+                />
+              </div>
+
+              <div class="st__row">
+                <label class="st__fieldLabel" for="draft-key">API-KEY</label>
+                <input
+                  id="draft-key"
+                  v-model="draft.apiKey"
+                  class="st__input"
+                  type="password"
                   spellcheck="false"
                   placeholder="API-KEY"
                 />
-                <button class="st__ghost" type="button" @click="toggleKey(provider.id)">
-                  {{ revealedKeys.has(provider.id) ? '隐藏' : '显示' }}
-                </button>
-                <label class="st__check st__check--inline">
-                  <input v-model="drafts[provider.id].persistKey" type="checkbox" />
-                  <span>记住到本机</span>
-                </label>
               </div>
-              <p v-if="!drafts[provider.id].persistKey" class="st__hint">
-                Key 默认不写入本地存储，重开应用需重新填写。
+
+              <p v-if="draftMessage" class="st__hint" :class="draftMessage.ok ? 'st__hint--ok' : 'st__hint--error'">
+                {{ draftMessage.text }}
               </p>
 
               <div class="st__row">
+                <button class="st__ghost" type="button" @click="cancelDraft">取消</button>
                 <button
                   class="st__ghost"
                   type="button"
-                  :disabled="testingId === provider.id || !canTestCard(provider.id)"
-                  @click="runConnectionTest(provider.id)"
+                  :disabled="testing || !canTestDraft"
+                  @click="runConnectionTest"
                 >
-                  {{ testingId === provider.id ? '测试中…' : '测试连接' }}
+                  {{ testing ? '测试中…' : '测试连接' }}
                 </button>
-                <!--
-                  Shown only while it still describes what is in the fields: a result belongs to the
-                  values it was run against, and leaving a stale "连接正常" next to an edited URL would
-                  be a confident statement about something that was never tested.
-                -->
-                <span
-                  v-if="liveTestResult(provider.id)"
-                  class="st__hint"
-                  style="margin: 0"
-                  :class="liveTestResult(provider.id)?.ok ? 'st__hint--ok' : 'st__hint--error'"
-                >
-                  {{ liveTestResult(provider.id)?.message }}
-                </span>
+                <button class="st__primary" type="button" @click="saveDraft">保存</button>
               </div>
+            </div>
 
-              <p v-if="saveErrors[provider.id]" class="st__hint st__hint--error">
-                {{ saveErrors[provider.id] }}
-              </p>
+            <p v-if="store.settings.value.providers.length === 0 && !draft" class="st__empty">
+              还没有任何模型。点右上角「+ 新建」，填上服务商、模型名称、Base URL 与 API-KEY 再保存，
+              它就会出现在输入框的模型下拉里。
+            </p>
 
-              <!--
-                Balance endpoint. There is no standard balance API, so this is the escape hatch for
-                vendors we do not ship an adapter for (DeepSeek is matched automatically by host).
-                Left empty, an unknown vendor reports "no balance API" instead of guessing.
-              -->
-              <details class="st__details">
-                <summary class="st__detailsHead">账户余额（可选）</summary>
-                <p class="st__hint">
-                  DeepSeek 的余额接口已内置，无需填写。其他厂商各家接口不同，填上「余额地址」与
-                  「取值路径」即可读取，例如路径 <code>data.0.balance</code>。
-                </p>
-                <div class="st__row">
-                  <input
-                    :value="provider.balanceUrl ?? ''"
-                    class="st__input"
-                    spellcheck="false"
-                    placeholder="余额接口地址，如 https://api.example.com/user/balance"
-                    @change="store.updateProvider(provider.id, { balanceUrl: ($event.target as HTMLInputElement).value })"
-                  />
-                  <input
-                    :value="provider.balancePath ?? ''"
-                    class="st__input st__input--narrow"
-                    spellcheck="false"
-                    placeholder="取值路径"
-                    @change="store.updateProvider(provider.id, { balancePath: ($event.target as HTMLInputElement).value })"
-                  />
-                  <input
-                    :value="provider.currency ?? ''"
-                    class="st__input st__input--narrow"
-                    spellcheck="false"
-                    placeholder="币种 CNY"
-                    @change="store.updateProvider(provider.id, { currency: ($event.target as HTMLInputElement).value })"
-                  />
-                </div>
-              </details>
+            <!--
+              Saved cards are read-only, with 删除 as the only action. Everything a saved card needs to
+              say is here: which platform, which model, and which endpoint it will be reached through.
+            -->
+            <div v-for="provider in store.settings.value.providers" :key="provider.id" class="st__provider">
+              <div class="st__providerHead">
+                <span v-if="provider.isDefault" class="st__chipTag">默认</span>
+                <span class="st__providerName">{{ provider.name }}</span>
+                <code class="st__modelId">{{ provider.models[0]?.model }}</code>
+                <span class="st__spacer" />
+                <button class="st__link st__link--danger" type="button" @click="removeSaved(provider.id)">
+                  删除
+                </button>
+              </div>
+              <code class="st__providerUrl">{{ provider.baseUrl }}</code>
             </div>
 
             <!--
@@ -758,8 +584,8 @@ function applyVendorPreset(providerId: string, id: string) {
             <div class="st__field">
               <label class="st__label">国内模型平台官网</label>
               <p class="st__hint" style="margin-top: 0">
-                到任一平台注册并创建 API-KEY，回到上面的选项卡填入即可直连。
-                标了「已验证地址」的平台会自动填好 Base-URL；其余只保证官网链接，
+                到任一平台注册并创建 API-KEY，回到上面的「+ 新建」填入即可直连。
+                标了「已验证地址」的平台选中后会自动填好 Base-URL；其余只保证官网链接，
                 Anthropic 兼容地址请以该平台自己的文档为准。
               </p>
               <div class="st__vendors">
@@ -1321,9 +1147,10 @@ function applyVendorPreset(providerId: string, id: string) {
   background: var(--dsw-alias-bg-layer-1);
 }
 
-/* Unsaved edits: a visible edge, so "which card still needs saving" is answerable at a glance. */
-.st__provider--dirty {
-  border-color: var(--dsw-alias-border-l2);
+/* The draft card is the only editable one, so it is the only one that looks like a form. */
+.st__provider--draft {
+  background: transparent;
+  border-style: dashed;
 }
 
 /* Header row above the card stack: a label on the left, 新建 pushed right. */
@@ -1350,9 +1177,35 @@ function applyVendorPreset(providerId: string, id: string) {
   gap: 9px;
 }
 
-.st__chipTag--dirty {
-  background: var(--dsw-alias-bg-layer-3);
-  color: var(--dsw-alias-label-primary);
+/*
+ * A saved card's summary line: platform name, then the model it serves. The name is the loudest
+ * element because that is what the user chose; the model id is code because it is sent verbatim.
+ */
+.st__providerName {
+  font-size: 12.5px;
+  font-weight: 600;
+}
+
+.st__modelId {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--dsw-alias-label-caption);
+  font-family: var(--dsw-font-family-code);
+  font-size: 11.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.st__providerUrl {
+  display: block;
+  min-width: 0;
+  margin-top: 3px;
+  overflow: hidden;
+  color: var(--dsw-alias-label-caption);
+  font-family: var(--dsw-font-family-code);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .st__providerHead .st__link:first-of-type {

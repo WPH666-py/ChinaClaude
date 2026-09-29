@@ -16,7 +16,7 @@
  */
 import { computed, nextTick, ref, watch } from 'vue'
 import type { CatalogModel } from '../types'
-import { useSettings, PERMISSION_PRESETS } from '../composables/useSettings'
+import { useSettings, PERMISSION_PRESETS, EFFORT_LEVELS } from '../composables/useSettings'
 import { useBridge } from '../composables/useBridge'
 
 const props = defineProps<{
@@ -29,6 +29,14 @@ const props = defineProps<{
   awaitingDialog: boolean
   model: string
   permissionMode: string
+  /**
+   * Reasoning effort the session's child is running with, or '' for the model default.
+   *
+   * A SESSION property, not a setting: the CLI takes it as a `--effort` argument, so switching it
+   * relaunches the child and resumes the same conversation. It lives here rather than on a settings
+   * card because it is something a user changes while working, not once while configuring.
+   */
+  effort?: string
   /** Models the CLI reported for this session. */
   catalogModels?: CatalogModel[]
   /** What the CLI says it is actually running, when no explicit model was chosen. */
@@ -49,6 +57,8 @@ const emit = defineEmits<{
   (e: 'stop'): void
   /** `ref` is "providerId::model"; an empty value means "follow the provider default". */
   (e: 'change-model', ref: string): void
+  /** Reasoning effort for subsequent turns; '' restores the model's own default. */
+  (e: 'change-effort', level: string): void
   (e: 'change-mode', mode: string): void
   (e: 'open-settings'): void
 }>()
@@ -61,7 +71,39 @@ const fileInput = ref<HTMLInputElement | null>(null)
 const attaching = ref(false)
 /** Why the last attach attempt failed, shown inline so a click never fails silently. */
 const attachError = ref<string | null>(null)
-const openMenu = ref<'mode' | 'model' | null>(null)
+const openMenu = ref<'mode' | 'model' | 'effort' | null>(null)
+
+/**
+ * Reasoning-effort choices, labelled rather than shown raw.
+ *
+ * The values are the levels the CLI itself reports per model (`supportedEffortLevels`); the words are
+ * what the levels mean to someone deciding. `xhigh` sits between high and max and is easy to miss
+ * when guessing from prose, which is why the list comes from the CLI rather than from a doc.
+ */
+const EFFORT_LABELS: Record<string, string> = {
+  low: '低',
+  medium: '中',
+  high: '高',
+  xhigh: '极高',
+  max: '最高',
+}
+
+const EFFORT_CHOICES = [
+  { value: '', label: '默认', desc: '由模型自己决定' },
+  ...EFFORT_LEVELS.map((level) => ({ value: level as string, label: EFFORT_LABELS[level] ?? level, desc: '' })),
+]
+
+/** Trigger text. Named, not just the level, so it cannot be mistaken for the model chip beside it. */
+const effortLabel = computed(() => {
+  const level = props.effort ?? ''
+  if (!level) return '推理 默认'
+  return `推理 ${EFFORT_LABELS[level] ?? level}`
+})
+
+function pickEffort(value: string) {
+  openMenu.value = null
+  emit('change-effort', value)
+}
 
 /** Read one File as a data URL; the bridge turns it back into bytes on disk. */
 function readAsDataUrl(file: File): Promise<string> {
@@ -330,6 +372,40 @@ watch(openMenu, (value) => {
         </div>
 
         <div class="composer__trailing">
+          <!--
+            Reasoning effort. Offered whenever a session exists — unlike the model picker it does not
+            depend on a configured provider, because the level is a property of whatever model is
+            already running.
+          -->
+          <div v-if="!disabled" class="pop" data-popup>
+            <button
+              class="composer__select"
+              type="button"
+              title="推理强度：越高思考越多、越慢"
+              @click="openMenu = openMenu === 'effort' ? null : 'effort'"
+            >
+              <span>{{ effortLabel }}</span>
+              <span class="reason__caret" />
+            </button>
+
+            <div v-if="openMenu === 'effort'" class="pop__menu pop__menu--right">
+              <button
+                v-for="choice in EFFORT_CHOICES"
+                :key="choice.value || 'default'"
+                class="pop__item"
+                :class="{ 'pop__item--on': (effort ?? '') === choice.value }"
+                type="button"
+                @click="pickEffort(choice.value)"
+              >
+                <span class="pop__itemLabel">{{ choice.label }}</span>
+                <span v-if="choice.desc" class="pop__itemDesc">{{ choice.desc }}</span>
+              </button>
+              <p class="pop__note">
+                切换推理强度会重启 Claude Code 进程，并用 --resume 恢复当前对话，上下文不丢。
+              </p>
+            </div>
+          </div>
+
           <!-- model: only offered once a provider exists, otherwise there is nothing to choose -->
           <div v-if="hasConfiguredModels" class="pop" data-popup>
             <button class="composer__select" type="button" :disabled="disabled" @click="openMenu = openMenu === 'model' ? null : 'model'">
@@ -486,6 +562,16 @@ watch(openMenu, (value) => {
   color: var(--dsw-alias-link);
   font-size: 11.5px;
   text-align: left;
+}
+
+/* Says what a choice COSTS, where the choice is made: effort changes restart the child. */
+.pop__note {
+  margin: 4px 0 0;
+  padding: 7px 10px 0;
+  border-top: 0.5px solid var(--dsw-alias-border-l1);
+  color: var(--dsw-alias-label-caption);
+  font-size: 11px;
+  line-height: 15px;
 }
 
 /* Warn mark on the model trigger when the running model belongs to no configured provider. */

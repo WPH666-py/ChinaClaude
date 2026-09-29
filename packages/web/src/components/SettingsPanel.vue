@@ -760,6 +760,34 @@ function removeSaved(providerId: string) {
           <!-- about -->
           <template v-else>
             <h3 class="st__h">关于</h3>
+
+            <!--
+              The author's statement. It is the one block in settings that is not explaining a
+              control, so it is set apart deliberately: white on a raised panel, where every other
+              section uses the muted caption colour for prose.
+            -->
+            <div class="st__author">
+              <p class="st__authorLead">青岛理工大学 2022 级毕业生水哥，励志做中国人的 AI 和智能体。</p>
+              <p class="st__authorBody">
+                这是 Claude Code 二次 Harness 化开发版 ClaudeCode-CN，剔除了所有风控点并将原有的 CLI
+                终端图形化。
+              </p>
+              <p class="st__authorBody">
+                此项目在 GitHub 上开源：
+                <a
+                  class="st__authorLink"
+                  href="https://github.com/WPH666-py/ChinaClaude"
+                  target="_blank"
+                  rel="noreferrer"
+                >github.com/WPH666-py/ChinaClaude</a>。
+                需要再次开发的同学，请备注原作者为水哥。
+              </p>
+              <p class="st__authorBody">
+                对此产品如有任何疑问，请邮件联系
+                <a class="st__authorLink" href="mailto:943050454@qq.com">943050454@qq.com</a>，水哥感激不尽。
+              </p>
+            </div>
+
             <div class="st__kv">
               <span class="st__kvK">客户端</span>
               <span class="st__kvV">Claude Code · CN</span>
@@ -1276,6 +1304,53 @@ function removeSaved(providerId: string) {
   min-width: 76px;
   padding: 2px 4px;
   font-size: 11.5px;
+}
+
+/*
+ * The author's statement.
+ *
+ * White on a raised panel, which is the one place in this panel that departs from the muted caption
+ * colour used for explanatory prose. That is the point: every other section explains a control, and
+ * this one is the author speaking, so it should read as a statement rather than as another hint.
+ */
+.st__author {
+  margin-bottom: 14px;
+  padding: 12px 14px;
+  border: 0.5px solid var(--dsw-alias-border-l2);
+  border-radius: 10px;
+  background: var(--dsw-alias-bg-layer-2);
+  color: #fff;
+}
+
+.st__authorLead {
+  margin: 0 0 8px;
+  color: #fff;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 20px;
+}
+
+.st__authorBody {
+  margin: 0 0 6px;
+  color: #fff;
+  font-size: 12.5px;
+  line-height: 20px;
+}
+
+.st__authorBody:last-child {
+  margin-bottom: 0;
+}
+
+/* Underlined rather than recoloured, so the block stays white while the links stay findable. */
+.st__authorLink {
+  color: #fff;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  word-break: break-all;
+}
+
+.st__authorLink:hover {
+  color: var(--dsw-alias-link);
 }
 
 .st__kv {

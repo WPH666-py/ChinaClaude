@@ -202,6 +202,135 @@ function traceLine(event: BridgeEvent): string {
       return event.kind
   }
 }
+
+// --- trace disclosure --------------------------------------------------------
+
+/**
+ * Which trace rows are open.
+ *
+ * A SET, not a single id: a trace is read by opening several rows and comparing them, and a view
+ * that closed the previous one on every click would make that impossible.
+ */
+const openTrace = ref<Set<string>>(new Set())
+
+/**
+ * Row key.
+ *
+ * `at` alone is not unique — the CLI emits several frames inside one millisecond, which is exactly
+ * what the trace exists to show — so the index disambiguates them.
+ */
+function traceKey(event: BridgeEvent, index: number): string {
+  return `${event.at}-${event.kind}-${index}`
+}
+
+function toggleTrace(key: string) {
+  const next = new Set(openTrace.value)
+  if (next.has(key)) next.delete(key)
+  else next.add(key)
+  openTrace.value = next
+}
+
+function isTraceOpen(key: string): boolean {
+  return openTrace.value.has(key)
+}
+
+/**
+ * Human labels for the event fields.
+ *
+ * The alternative — rendering the raw JSON — shows the same data in a shape nobody reads: escaped
+ * quotes inside a string, and keys named after the wire format. Labels cost one table and make the
+ * panel legible without hiding anything, because a key with no label still renders under its own
+ * name rather than being dropped.
+ */
+const TRACE_LABELS: Record<string, string> = {
+  at: '时间',
+  seq: '序号',
+  text: '内容',
+  message: '内容',
+  level: '级别',
+  model: '模型',
+  resolvedModel: '实际模型',
+  tools: '工具',
+  skills: '技能',
+  slashCommands: '斜杠命令',
+  agents: '子代理',
+  plugins: '插件',
+  mcpServers: 'MCP 服务',
+  permissionMode: '权限模式',
+  capabilities: '能力',
+  claudeCodeVersion: '版本',
+  cwd: '工作目录',
+  claudeSessionId: 'CLI 会话 ID',
+  id: '调用 ID',
+  name: '工具',
+  input: '参数',
+  toolUseId: '调用 ID',
+  isError: '错误',
+  content: '内容',
+  subtype: '子类型',
+  stopReason: '结束原因',
+  durationMs: '耗时(ms)',
+  usage: '用量',
+  reportedCostUsd: 'CLI 报告费用',
+  estimated: '估算 token',
+  requestId: '请求 ID',
+  displayName: '名称',
+  description: '说明',
+  suggestions: '建议',
+  decisionReason: '决定原因',
+  decisionReasonType: '原因类型',
+  defaultToNo: '默认拒绝',
+  suppressAlwaysAllowRule: '抑制总是允许',
+  requiresUserInteraction: '需要交互',
+  blockedPath: '阻断路径',
+  decision: '决定',
+  scope: '范围',
+  dialogKind: '对话框类型',
+  payload: '负载',
+  behavior: '结果',
+  parentToolUseId: '所属子代理',
+  code: '退出码',
+  reason: '原因',
+}
+
+/**
+ * Fields the row header already shows.
+ *
+ * `kind` has its own column and `sessionId` is identical on every row of a stream, so repeating
+ * either in the panel is noise. Everything else is shown, including keys this file has never heard
+ * of — that is the point of driving the list off the event itself.
+ */
+const TRACE_HIDDEN = new Set(['sessionId', 'kind'])
+
+/**
+ * Every field of an event, in wire order, ready to render.
+ *
+ * Driven off `Object.entries` rather than a per-kind switch so a field the bridge adds later shows up
+ * on its own. A hand-written list is how a trace view silently stops showing the thing you need.
+ */
+function traceFields(event: BridgeEvent): Array<{ key: string; label: string; value: string; code: boolean }> {
+  const rows: Array<{ key: string; label: string; value: string; code: boolean }> = []
+  for (const [key, value] of Object.entries(event)) {
+    if (TRACE_HIDDEN.has(key)) continue
+    if (value === undefined || value === null || value === '') continue
+    if (Array.isArray(value) && value.length === 0) continue
+
+    let text: string
+    if (key === 'at' && typeof value === 'number') text = new Date(value).toLocaleString('zh-CN')
+    else if (typeof value === 'string') text = value
+    else if (Array.isArray(value) && value.every((entry) => typeof entry === 'string')) text = value.join(', ')
+    else text = JSON.stringify(value, null, 2)
+
+    rows.push({
+      key,
+      label: TRACE_LABELS[key] ?? key,
+      value: text,
+      // Structured values keep their own line breaks, so they render in a <pre>.
+      code: typeof value !== 'string' && !(Array.isArray(value) && value.every((entry) => typeof entry === 'string')),
+    })
+  }
+  return rows
+}
 </script>
 
 <template>
@@ -217,9 +346,30 @@ function traceLine(event: BridgeEvent): string {
         :key="`trace-${index}`"
         class="traceRow"
       >
-        <span class="traceRow__time">{{ formatTime(event.at) }}</span>
-        <span class="traceRow__kind" :data-kind="event.kind">{{ event.kind }}</span>
-        <span class="traceRow__body">{{ traceLine(event) }}</span>
+        <!--
+          The whole row is the disclosure control: the one-line summary stays visible so the trace
+          keeps its shape while rows are opened, and what is truncated in that summary — a warning's
+          full JSON, a tool's whole input — is what the panel below shows.
+        -->
+        <button
+          class="traceRow__head"
+          type="button"
+          :aria-expanded="isTraceOpen(traceKey(event, index))"
+          @click="toggleTrace(traceKey(event, index))"
+        >
+          <span class="traceRow__caret" :class="{ 'traceRow__caret--open': isTraceOpen(traceKey(event, index)) }" />
+          <span class="traceRow__time">{{ formatTime(event.at) }}</span>
+          <span class="traceRow__kind" :data-kind="event.kind">{{ event.kind }}</span>
+          <span class="traceRow__body">{{ traceLine(event) }}</span>
+        </button>
+
+        <div v-if="isTraceOpen(traceKey(event, index))" class="traceRow__detail">
+          <div v-for="field in traceFields(event)" :key="field.key" class="traceField">
+            <span class="traceField__label">{{ field.label }}</span>
+            <pre v-if="field.code" class="traceField__code">{{ field.value }}</pre>
+            <span v-else class="traceField__text">{{ field.value }}</span>
+          </div>
+        </div>
       </div>
     </div>
 
@@ -375,14 +525,88 @@ function traceLine(event: BridgeEvent): string {
 
 <style scoped>
 .traceRow {
-  display: grid;
-  grid-template-columns: 64px 92px minmax(0, 1fr);
-  gap: 10px;
-  padding: 3px 0;
   border-bottom: 0.5px solid var(--dsw-alias-border-l1);
+}
+
+/* The disclosure control is the row itself, so the summary keeps its shape while rows are opened. */
+.traceRow__head {
+  display: grid;
+  grid-template-columns: 10px 64px 92px minmax(0, 1fr);
+  gap: 10px;
+  align-items: baseline;
+  width: 100%;
+  padding: 3px 0;
+  background: transparent;
+  color: inherit;
   font-family: var(--dsw-font-family-code);
   font-size: 11.5px;
   line-height: 18px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.traceRow__head:hover {
+  background: var(--dsw-alias-interactive-bg-hover-solid);
+}
+
+.traceRow__caret {
+  align-self: center;
+  width: 0;
+  height: 0;
+  border-top: 3.5px solid transparent;
+  border-bottom: 3.5px solid transparent;
+  border-left: 4px solid var(--dsw-alias-label-caption);
+  transition: transform 0.12s ease;
+}
+
+.traceRow__caret--open {
+  transform: rotate(90deg);
+}
+
+/*
+ * The expanded detail. Indented to the body column and rule-marked so it reads as belonging to the
+ * row above rather than as another row.
+ */
+.traceRow__detail {
+  margin: 2px 0 8px 20px;
+  padding: 8px 10px;
+  border-left: 2px solid var(--dsw-alias-border-l2);
+  border-radius: 0 8px 8px 0;
+  background: var(--dsw-alias-bg-layer-2);
+}
+
+.traceField {
+  display: grid;
+  grid-template-columns: 84px minmax(0, 1fr);
+  gap: 8px;
+  padding: 2px 0;
+}
+
+.traceField__label {
+  color: var(--dsw-alias-label-caption);
+  font-size: 11px;
+}
+
+.traceField__text {
+  min-width: 0;
+  color: var(--dsw-alias-label-primary);
+  font-size: 11.5px;
+  line-height: 17px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.traceField__code {
+  min-width: 0;
+  max-height: 320px;
+  margin: 0;
+  overflow: auto;
+  color: var(--dsw-alias-label-secondary);
+  font-family: var(--dsw-font-family-code);
+  font-size: 11px;
+  line-height: 16px;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 .traceRow__time {

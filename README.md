@@ -5,6 +5,14 @@
 
 **技术栈**：Vue 3 + Node 桥接进程 + Tauri 2（WebView2）。没有 Electron。
 
+> **本仓库现名 ChinaClaude。** 上面那行标题是旧名，下面全文里凡是出现「Claude Code · CN」、
+> `claude-code-cn`、`ClaudeCode-CN` 的地方都是历史称呼，指的都是同一个东西。
+> 窗口标题、`productName`、关于页与安装包名已经全部改为 **ChinaClaude**。
+>
+> `identifier`（`com.claudecodecn.desktop`）**故意没有改**：它决定 WebView2 的数据目录，也就是
+> 用户配置的服务商与 API Key 存在哪儿，改掉它等于让所有已安装用户重填一次凭据。
+> `CCCN_*` 环境变量前缀同理 —— 它是外壳与 sidecar 之间的内部契约，用户永远看不到。
+
 ---
 
 ## 为什么不是 Electron
@@ -137,6 +145,10 @@ _sidecar/              构建产物：node.exe + bridge/
 | POST | `/api/attachments` | 保存附件（base64），返回可直接交给 agent 的绝对路径 |
 | GET | `/api/attachments` | 附件用量（数量与总字节） |
 | DELETE | `/api/attachments` | 清空附件目录 |
+| GET | `/api/update` | 查更新：多源取最新，回 `{ok, current, latest, available, installable, asset, errors}`。**asset 里不含下载 url** |
+| POST | `/api/update/download` | 开始下载上一次检查找到的安装包（202 立即返回，地址取自桥内存而非请求体） |
+| GET | `/api/update/status` | 下载进度 `{phase, received, total, verified, error}`；`verified: null` = 该源没给校验值 |
+| POST | `/api/update/install` | 运行已下载的安装器（`/S`）；未下载完成时返回 409 |
 | POST | `/api/balance` | 读取服务商账户余额：`{baseUrl, apiKey, balanceUrl?, balancePath?}` |
 
 事件类型：`init` `thinking` `thinking_tokens` `text` `tool_use` `tool_result` `user`
@@ -1111,3 +1123,104 @@ autofocus、确认没有任何全局 `keydown` 绑定 —— 都无法解释。�
 代价是体积，收益是**彻底离线**：目标机器不需要预先装 Claude Code，也不需要能访问微软的下载源。若想换回小体积，把 `bundle.windows.webviewInstallMode` 改成 `downloadBootstrapper` 并设 `CCCN_SKIP_CLAUDE=1` 重新打包即可（两者都可独立开关）。
 
 体积对比：Harness-CN 的 Electron 安装包 140 MB、主程序 233 MB。
+
+> **已更新（本轮）：上面那张表和「彻底离线」的结论都不再成立。**
+>
+> 现在有两个构建档位，区别只在 `bundle.resources` 里留不留 `claude.exe`：
+>
+> | 档位 | 怎么打 | 安装包 | 内容 |
+> | --- | --- | --- | --- |
+> | 完整（本地） | `pnpm --filter @cccn/desktop build` | 约 250 MB | 内置 claude.exe + node.exe + 桥 + 技能 + 审计引擎 |
+> | 公开发布 | 同上，先把 `resources/sidecar/claude.exe` 从 `bundle.resources` 摘掉 | **24.43 MB** | node.exe + 桥 + 技能 + 审计引擎，**不含 claude.exe** |
+>
+> 公开发布档不含 `claude.exe` 是**有意的**：它是 Anthropic 的专有软件（`LICENSE.md` 写明
+> `© Anthropic PBC. All rights reserved.`），由每位使用者按自己的凭据自行获取。
+>
+> **WebView2 已从离线运行时改为 `downloadBootstrapper`。** 离线运行时约 150 MB，是当初为
+> 「国内连不上微软 CDN」做的选择，但它把安装包顶到 229.6 MB —— 既超过 Gitee 的 **100 MB**
+> 附件上限，而实测 GitHub 的 release 资产在本机只有约 **2 KB/s**（229.6 MB 要跑约 28 小时）。
+> 换句话说：**旧包在两条渠道上都发不出去**，自动更新也就无从谈起。
+>
+> WebView2 运行时在 Win11 上系统自带，装了 Edge 的 Win10 也基本都有，引导程序通常什么都不用下。
+> 换掉之后安装包 **24.43 MB**，Gitee 与 GitHub 都能正常分发。代价只有一个：极老的、从未装过
+> Edge 的 Win10 机器首次安装时需要联网一次。
+
+---
+
+## 实时思考（`--include-partial-messages`）
+
+CLI 的 `stream-json` 默认是**块级**的：`assistant` 帧只在内容块**写完之后**才到。所以长回答在
+写完之前屏幕上什么都没有——推理过程是「全须全尾」地突然出现的，唯一的生命迹象是
+`thinking_tokens` 估算器。
+
+实测 `--include-partial-messages` 会把端点原始的 SSE 增量转发出来，于是给子进程加上它，
+`normalizeEvent` 新增 `stream_event` 分支：
+
+| 帧 | 处理 |
+| --- | --- |
+| `thinking_delta` | 转成 `thinking_delta` 事件，前端实时渲染 |
+| `text_delta` | 转成 `text_delta` 事件 |
+| `input_json_delta` | **丢弃**——半截 JSON 不可渲染，随后的完整 `tool_use` 帧带着解析好的入参 |
+| `system/status` | 转成 `status`（如 `requesting`），比第一个 token 更早的生命周期信号 |
+
+两个关键决定：
+
+1. **增量是「瞬态」的，不进 replay 日志，也不带 `seq`。** `history` 是 4000 条环形缓冲，
+   一次长回答几十上百个碎片进去会把**真实会话事件**挤掉，重连的客户端还会重放一堆碎片。
+   SSE 写出端本来就只在有 `seq` 时发 `id:` 行，所以 `Last-Event-ID` 仍停在最后一个真实事件上。
+   实测两轮对话后 `historyLength=22`，而端点发了 20+ 个增量。
+2. **前端按块合并增量，进度 tick 用替换而非追加。** 否则 `events` 会按 token 数量增长，
+   且**每个碎片都重跑一遍 transcript 的 computed**——这正是实时视图最不该引入的开销。
+
+完成的块仍然是时间线的唯一真相：增量只负责填补它到达之前的空窗，块一到就自动让位。
+实测（慢速 mock，900ms 一个增量）发送后 4.2 秒即显示已到达的部分与 `约 N tokens`；
+两轮结束后实时框归零、完成块 2 个、思考文本与回复各出现 2 次（**无重复**）。
+
+---
+
+## 自动更新
+
+启动后查一次发布源，有新版本就弹两个选项：**暂不更新 / 立刻更新**。
+
+### 源是列表，不是单个地址
+
+```
+gitee : ph-wang/ChinaClaude      ← 国内可达，优先
+github: WPH666-py/ChinaClaude    ← 兜底
+```
+
+两个源**各自携带 `owner`/`repo`**，而不是共用一个 owner 字段：Gitee 的空间地址（`ph-wang`）
+与 GitHub 用户名（`WPH666-py`）并不相同，共用一个字段会安静地去查一个不存在的仓库——
+而那个 404 和「还没有发布任何版本」长得**一模一样**。
+
+- **全部不可达是正常结果，不是错误。** 对这个应用来说 github.com 连不上是常态，所以检查
+  永远**不阻塞启动**（fire-and-forget，不 await），全部失败返回 `ok:false` 而非抛异常。
+- **同一版本号时，优先选真正有安装包的那个源。** Gitee 附件上限 100 MB，一个源可能报得出
+  「有新版」却给不出文件；只取第一个源会让界面先说可更新、下一步又拒绝安装。
+- 版本号必须是 `v?数字.数字.数字`。解析不出来的 tag **永远不算更新**——否则一个乱命名的
+  release 会永远弹窗。
+
+### 完整性
+
+GitHub 的 release asset 自带 `digest`（`sha256:...`），下载后校验；**Gitee 不提供**，此时状态是
+`verified: null`，界面明说「该来源未提供校验值，未能校验完整性」——**「没能检查」和「检查过没问题」
+不能被显示成同一件事**。
+
+### 安装
+
+下载 → 校验 → `Start-Process installer.exe /S` → 应用关闭窗口让出文件锁。
+
+**不做「先卸载再安装」。** Tauri 的 NSIS 安装器本身就是原地升级（先删旧文件再装新的），效果一样
+但没有那个致命窗口：先卸载的话，卸载完成到安装成功之间用户手上什么都没有，这期间下载失败、断网、
+杀软拦截、手滑取消，任何一步出问题就是应用没了、设置也没了。
+
+### 页面不能指定下载地址
+
+`/api/update` 返回的 `asset` 里**没有 `url`**，只有 `name` / `size` / `sha256`。下载地址只存在于
+桥的内存里，由配置好的更新源决定。页面可以查、可以请求下载，但**永远不能交给桥一个 URL 让它去
+取并执行**。这条保证单独成函数（`publicCheckResult()`）并有测试盯着，而不是靠某处记得过滤字段。
+
+### 测试
+
+`packages/bridge/test/update.mjs`——32 项，**离线**（stub 掉 `fetch`），毫秒级，已注册进 `all.mjs`。
+覆盖版本序、源回退、多源取最新、以及上面那两条不变量。

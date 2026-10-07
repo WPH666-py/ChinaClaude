@@ -116,6 +116,62 @@ check('a version is reported even with no downloadable file', result.available =
 check('and it is marked not installable rather than offered', result.installable === false)
 check('the Gitee attachment cap is recorded as the reason it cannot host installers', GITEE_LIMITS.attachmentBytes === 100 * 1024 * 1024)
 
+/**
+ * The Gitee attachment list needs the NUMERIC release id — `/releases/latest/attach_files` 404s.
+ * Calling the `latest` form made every Gitee release look like it had no files at all, so the app
+ * silently fell back to the other source for the download. These two assertions guard the ADDRESS,
+ * not just the parsing, because the address is what was wrong.
+ */
+stubFetch()
+giteeRelease({
+  tag: 'v0.4.0',
+  files: [
+    {
+      id: 3335435,
+      name: 'ChinaClaude_0.4.0_x64-setup.exe',
+      size: 25622731,
+      browser_download_url: 'https://gitee.com/o/r/releases/download/v0.4.0/ChinaClaude_0.4.0_x64-setup.exe',
+    },
+  ],
+})
+result = await checkForUpdate({ currentVersion: '0.1.0', sources: [{ id: 'gitee', kind: 'gitee', owner: 'o', repo: 'r' }] })
+check(
+  'gitee attachments are fetched by numeric release id',
+  requested.some((u) => u.includes('/releases/42/attach_files')),
+  JSON.stringify(requested.filter((u) => u.includes('attach'))),
+)
+check('and never via the /latest/ form that 404s', !requested.some((u) => u.includes('latest/attach_files')))
+check('the gitee file size is parsed', result.asset?.size === 25622731, String(result.asset?.size))
+check('so a gitee-only install is offered', result.available === true && result.installable === true)
+
+/**
+ * When the attachment endpoint is unavailable, the release's own `assets` still carries the file —
+ * but in the same array as two auto-generated SOURCE archives that are not installers.
+ */
+stubFetch()
+routes.set('gitee.com/api/v5/repos/o/r/releases/latest', () =>
+  json({
+    id: 42,
+    tag_name: 'v0.5.0',
+    body: '',
+    assets: [
+      {
+        name: 'ChinaClaude_0.5.0_x64-setup.exe',
+        browser_download_url: 'https://gitee.com/o/r/releases/download/v0.5.0/ChinaClaude_0.5.0_x64-setup.exe',
+      },
+      { name: 'v0.5.0.zip', browser_download_url: 'https://gitee.com/o/r/archive/refs/tags/v0.5.0.zip' },
+      { name: 'v0.5.0.tar.gz', browser_download_url: 'https://gitee.com/o/r/archive/refs/tags/v0.5.0.tar.gz' },
+    ],
+  }),
+)
+result = await checkForUpdate({ currentVersion: '0.1.0', sources: [{ id: 'gitee', kind: 'gitee', owner: 'o', repo: 'r' }] })
+check(
+  'falls back to the release asset list when attach_files is unavailable',
+  result.asset?.name === 'ChinaClaude_0.5.0_x64-setup.exe',
+  String(result.asset?.name),
+)
+check('and never mistakes a source archive for an installer', result.installable === true && !result.asset.name.endsWith('.zip'))
+
 // One unreachable source must not take the answer down with it.
 stubFetch()
 routes.set('api.github.com', () => json({ tag_name: 'v0.2.0', body: '', html_url: 'u', assets: [] }))

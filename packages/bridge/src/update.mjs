@@ -112,10 +112,21 @@ async function readGithub(source) {
 }
 
 /**
- * Gitee: same shape of answer, but `assets` there holds only the auto-generated source archives, so
- * uploaded attachments have to be requested separately. A repository with no attachments — which is
- * every Gitee repository that cannot host our 230 MB installer — simply yields none, and the caller
- * falls through to the next source for the download URL while still taking the version from here.
+ * Gitee: same shape of answer, but the attachment list lives at a different address than GitHub's.
+ *
+ * TWO THINGS HERE WERE ONLY LEARNED BY TESTING AGAINST A REAL RELEASE, and both were wrong the first
+ * time:
+ *
+ *   1. `/releases/latest/attach_files` does not exist — it 404s. The endpoint needs the NUMERIC
+ *      release id. Calling the `latest` form made every Gitee release look like it had no files, so
+ *      the app silently fell back to the other source for the download.
+ *   2. `/attach_files` is the ONLY place the file size is reported. The release's own `assets` array
+ *      does include the uploaded file, but with just `name` and `browser_download_url` — no `size` —
+ *      so a progress bar built from it alone would have no total.
+ *
+ * `assets` is therefore kept as a FALLBACK rather than dropped, and it is filtered to
+ * `/releases/download/` links because the same array also carries two auto-generated SOURCE archives
+ * (`/archive/refs/tags/….zip`) that are not installers.
  */
 async function readGitee(source) {
   const base = `https://gitee.com/api/v5/repos/${source.owner}/${source.repo}`
@@ -125,13 +136,19 @@ async function readGitee(source) {
   try {
     const files = await getJson(`${base}/releases/${release.id}/attach_files`, { accept: 'application/json' })
     assets = (Array.isArray(files) ? files : []).map((file) => ({
-      name: file.title ?? file.name ?? '',
-      url: file.download_url ?? file.browser_download_url ?? '',
+      name: file.name ?? file.title ?? '',
+      url: file.browser_download_url ?? file.download_url ?? '',
       size: file.size ?? null,
       sha256: '',
     }))
   } catch {
-    // No attachments, or the endpoint is unavailable: the version is still usable.
+    /* fall through to the release's own asset list */
+  }
+
+  if (assets.length === 0) {
+    assets = (Array.isArray(release.assets) ? release.assets : [])
+      .filter((asset) => String(asset.browser_download_url ?? '').includes('/releases/download/'))
+      .map((asset) => ({ name: asset.name, url: asset.browser_download_url, size: null, sha256: '' }))
   }
 
   return {

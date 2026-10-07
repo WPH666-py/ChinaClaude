@@ -14,8 +14,9 @@ import Composer from './components/Composer.vue'
 import DirectoryPicker from './components/DirectoryPicker.vue'
 import CatalogPanel from './components/CatalogPanel.vue'
 import SettingsPanel from './components/SettingsPanel.vue'
+import UpdateDialog from './components/UpdateDialog.vue'
 import { useSettings, parseModelRef } from './composables/useSettings'
-import type { ProviderBalance, TranscriptSummary } from './types'
+import type { ProviderBalance, TranscriptSummary, UpdateCheck } from './types'
 import { priceEvents, isPeak } from '../../bridge/src/pricing.mjs'
 
 const bridge = useBridge()
@@ -41,6 +42,31 @@ const sidebarCollapsed = ref(false)
 const tab = ref<'chat' | 'trace'>('chat')
 /** Set when the user explicitly asks for a new session, so polling never overrides it. */
 const setupPinnedByUser = ref(false)
+
+/**
+ * The available update, if any.
+ *
+ * Checked only AFTER the app is usable, and never awaited on the startup path: the request goes to
+ * github.com / gitee.com, which for this app's users is frequently unreachable, and launching must
+ * not wait on — or fail because of — a host that has nothing to do with running a session.
+ */
+const updateCheck = ref<UpdateCheck | null>(null)
+const updateOpen = ref(false)
+
+async function checkForUpdates() {
+  try {
+    const result = await bridge.checkUpdate()
+    // Surfaced only when there is something to INSTALL. A source can report a version without being
+    // able to serve the file — Gitee caps attachments at 100 MB and the installer is ~230 MB — and
+    // raising a dialog whose only button then fails would be worse than saying nothing.
+    if (result.ok && result.available && result.installable && result.asset) {
+      updateCheck.value = result
+      updateOpen.value = true
+    }
+  } catch {
+    // Unreachable is an ordinary outcome here: the app simply has no update to offer.
+  }
+}
 
 /**
  * Reasoning effort of the running session; '' means the model's own default.
@@ -427,6 +453,9 @@ onMounted(async () => {
   if (setupOpen.value && !pinnedByUrl && hasBoundModel.value) {
     void createSessionIn(defaultWorkspace.value)
   }
+
+  // Deliberately NOT awaited: the update check must never delay or block the app coming up.
+  void checkForUpdates()
 })
 
 /**
@@ -811,6 +840,17 @@ function newSession() {
       :active-model="bridge.activeSession.value?.model ?? null"
       :has-session="Boolean(bridge.activeSessionId.value)"
       @close="catalogOpen = false"
+    />
+
+    <!--
+      Update prompt. Rendered above everything else because it is the one thing that can end the
+      session: accepting it launches the installer and closes the window.
+    -->
+    <UpdateDialog
+      v-if="updateOpen && updateCheck"
+      :check="updateCheck"
+      :bridge="bridge"
+      @close="updateOpen = false"
     />
 
     <SettingsPanel

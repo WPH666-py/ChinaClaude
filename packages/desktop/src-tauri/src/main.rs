@@ -132,6 +132,10 @@ fn spawn_bridge(dir: &PathBuf) -> Result<(Child, String), String> {
         // inventory report everything as missing.
         .env("CCCN_PACKAGED", "1")
         .env("CCCN_SIDECAR_DIR", dir)
+        // The bridge answers "is there a newer release than this?" — so it has to be told what
+        // "this" is. Taken from the crate version, which is the same number the installer carries,
+        // rather than duplicated as a literal that could drift.
+        .env("CCCN_APP_VERSION", claude_code_cn_lib::VERSION)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
 

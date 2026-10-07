@@ -13,6 +13,8 @@ import type {
   Health,
   SessionView,
   TranscriptListing,
+  UpdateCheck,
+  UpdateProgress,
   VetReport,
   VetStatus,
   ProviderBalance,
@@ -570,6 +572,32 @@ export function useBridge() {
   }
 
   /**
+   * Ask whether a newer release exists.
+   *
+   * Resolves even when nothing was reachable — the bridge reports that as `ok: false` rather than an
+   * error, because for this app an unreachable github.com is an ordinary condition and startup must
+   * not depend on it.
+   */
+  async function checkUpdate(): Promise<UpdateCheck> {
+    return api<UpdateCheck>('/api/update')
+  }
+
+  /** Start downloading the installer the last check found; progress is polled separately. */
+  async function startUpdateDownload(): Promise<{ started?: boolean; error?: string; progress?: UpdateProgress }> {
+    return api('/api/update/download', { method: 'POST', body: JSON.stringify({}) })
+  }
+
+  /** Poll the download's progress. One long response is easier to poll than to stream. */
+  async function updateStatus(): Promise<UpdateProgress> {
+    return api<UpdateProgress>('/api/update/status')
+  }
+
+  /** Launch the downloaded installer. The window must then close so it can replace the app's files. */
+  async function installUpdate(): Promise<{ started?: boolean; error?: string }> {
+    return api('/api/update/install', { method: 'POST', body: JSON.stringify({}) })
+  }
+
+  /**
    * Ask the provider for the account balance.
    *
    * Routed through the bridge rather than fetched from the page: the bridge is not subject to CORS,
@@ -719,6 +747,10 @@ export function useBridge() {
     listTranscripts,
     exportTranscript,
     vetStatus,
+    checkUpdate,
+    startUpdateDownload,
+    updateStatus,
+    installUpdate,
     vetScan,
     fetchBalance,
     saveAttachments,

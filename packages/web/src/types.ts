@@ -414,3 +414,45 @@ export interface Catalog {
   sessionState?: string | null
   outputStyle?: string | null
 }
+
+// ---- updates ----------------------------------------------------------------
+
+/**
+ * The installer a check found.
+ *
+ * There is deliberately NO `url` here: the bridge keeps it, so a page can never nominate a file for
+ * that process to fetch and then execute. The page gets the name, the size and the digest — enough to
+ * show what will be downloaded and to verify it afterwards.
+ */
+export interface UpdateAsset {
+  name: string
+  size: number | null
+  sha256: string
+}
+
+export interface UpdateCheck {
+  /** False when NO source could be reached. That is a normal outcome, not an error state. */
+  ok: boolean
+  current: string
+  latest?: string
+  available: boolean
+  /** True only when a source actually supplied a file. A host can know the version without it. */
+  installable?: boolean
+  notes?: string
+  page?: string
+  source?: string
+  /** Sources that answered, and those that did not — both are shown, so a silent mirror is visible. */
+  checked?: string[]
+  errors?: string[]
+  asset?: UpdateAsset | null
+}
+
+export interface UpdateProgress {
+  phase: 'idle' | 'downloading' | 'verifying' | 'ready' | 'installing' | 'error'
+  received: number
+  total: number
+  path: string | null
+  error: string | null
+  /** `null` means the source supplied no digest, so the download could not be checked at all. */
+  verified: boolean | null
+}

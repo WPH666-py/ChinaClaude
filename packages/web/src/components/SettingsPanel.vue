@@ -767,10 +767,11 @@ function removeSaved(providerId: string) {
               section uses the muted caption colour for prose.
             -->
             <div class="st__author">
-              <p class="st__authorLead">青岛理工大学 2022 级毕业生水哥，励志做中国人的 AI 和智能体。</p>
+              <p class="st__authorLead">青岛理工大学 2022 级毕业生水哥，立志做中国人的 AI 和智能体。</p>
               <p class="st__authorBody">
-                这是 Claude Code 二次 Harness 化开发版 ChinaClaude，剔除了所有风控点并将原有的 CLI
-                终端图形化。
+                这是 Claude Code 二次 Harness 化开发版 ChinaClaude：把国内访问链路上的封禁点
+                （安装源、官方 API、遥测）逐个解决，改用国内可达的 Anthropic 兼容端点，
+                并把原来的 CLI 终端图形化；<strong>原始 CLI 二进制未作任何修改</strong>。
               </p>
               <p class="st__authorBody">
                 此项目在 GitHub 上开源：

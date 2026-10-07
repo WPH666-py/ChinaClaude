@@ -37,6 +37,7 @@ const SUITES = [
   { name: 'attachments-balance', path: join(here, 'attachments-balance.mjs') },
   { name: 'connect-test', path: join(here, 'connect-test.mjs') },
   { name: 'cost', path: join(here, 'cost.mjs') },
+  { name: 'update (unit)', path: join(here, 'update.mjs') },
   { name: 'pricing (unit)', path: join(here, '..', '..', '..', '_probe', 'pricing-check.mjs') },
 ]
 

@@ -19,6 +19,7 @@ import { listTranscripts, groupTranscripts, transcriptToMarkdown } from './trans
 import { fetchBalance } from './balance.mjs'
 import { testConnection } from './connect-test.mjs'
 import { saveAttachments, attachmentsUsage, clearAttachments } from './attachments.mjs'
+import { checkForUpdate, createUpdateInstaller, publicCheckResult, DEFAULT_SOURCES } from './update.mjs'
 
 const MAX_BODY_BYTES = 1024 * 1024
 
@@ -96,6 +97,17 @@ export function createBridgeServer(options) {
     ...(options.resolvedBinary ? { resolvedBinary: options.resolvedBinary } : {}),
   })
 
+  const updater = createUpdateInstaller()
+  const appVersion = options.appVersion ?? process.env.CCCN_APP_VERSION ?? '0.0.0'
+  /**
+   * The last check's result, and the ONLY place a download URL may come from.
+   *
+   * The page can ask for a check and then for a download, but it can never hand this server a URL to
+   * fetch and execute — that would turn a local HTTP port into "download and run anything". The URL
+   * always originates in the configured update sources.
+   */
+  let lastCheck = null
+
   const server = createServer(async (req, res) => {
     const url = new URL(req.url ?? '/', `http://${req.headers.host ?? '127.0.0.1'}`)
 
@@ -120,6 +132,55 @@ export function createBridgeServer(options) {
           hasCredential: Boolean(defaults.authToken),
           sessions: sessions.size,
         })
+        return
+      }
+
+      // ---- updates ------------------------------------------------------------
+      /**
+       * Ask the configured sources whether a newer build exists.
+       *
+       * Never fails the request: an unreachable host is a NORMAL outcome for this app, so the answer
+       * distinguishes "no update" from "could not check" instead of turning into a 500 the UI would
+       * have to interpret.
+       */
+      if (req.method === 'GET' && url.pathname === '/api/update') {
+        lastCheck = await checkForUpdate({
+          currentVersion: appVersion,
+          sources: options.updateSources ?? DEFAULT_SOURCES,
+        })
+        sendJson(res, 200, {
+          // Redacted by a named helper: the download URL must not cross into the page, so that a page
+          // can never nominate a file for this process to fetch and execute.
+          ...publicCheckResult(lastCheck),
+          progress: updater.status(),
+        })
+        return
+      }
+
+      if (req.method === 'POST' && url.pathname === '/api/update/download') {
+        const asset = lastCheck?.asset
+        if (!asset?.url) {
+          sendJson(res, 409, { error: '没有可下载的安装包：请先检查更新，或换一个能提供安装包的源', progress: updater.status() })
+          return
+        }
+        // Fire and forget; the client polls /api/update/status for progress. `download` reports its
+        // own failures through that status rather than by rejecting.
+        void updater.download(asset)
+        sendJson(res, 202, { started: true, progress: updater.status() })
+        return
+      }
+
+      if (req.method === 'GET' && url.pathname === '/api/update/status') {
+        sendJson(res, 200, updater.status())
+        return
+      }
+
+      if (req.method === 'POST' && url.pathname === '/api/update/install') {
+        try {
+          sendJson(res, 200, updater.install())
+        } catch (error) {
+          sendJson(res, 409, { error: String(error?.message ?? error) })
+        }
         return
       }
 

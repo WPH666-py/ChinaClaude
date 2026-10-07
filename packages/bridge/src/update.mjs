@@ -30,9 +30,12 @@ import { pipeline } from 'node:stream/promises'
  *   - the releases API is public and needs NO token (verified: HTTP 200 on a public repo);
  *   - a release attachment is capped at **100 MB** (200 MB for GVP projects), 1 GB per repository.
  *
- * The Windows installer is ~230 MB, so Gitee can serve as a version/manifest source but CANNOT host
- * the installer itself. That is why sources are a list with independent download URLs rather than
- * "one host for everything".
+ * The installer was ~230 MB while it embedded the WebView2 OFFLINE runtime — well over that cap, so
+ * Gitee could report a version but never serve the file. Switching the bundle to
+ * `downloadBootstrapper` (the runtime is already present on Windows 11 and on any Windows 10 with
+ * Edge) took it to roughly 80 MB, which fits. Sources stay a LIST regardless: one host being
+ * unreachable is the normal case for this app, and the download URL must be free to come from a
+ * different host than the version did.
  */
 export const GITEE_LIMITS = { attachmentBytes: 100 * 1024 * 1024, repositoryBytes: 1024 * 1024 * 1024 }
 

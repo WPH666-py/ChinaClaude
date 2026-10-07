@@ -39,10 +39,16 @@ import { pipeline } from 'node:stream/promises'
  */
 export const GITEE_LIMITS = { attachmentBytes: 100 * 1024 * 1024, repositoryBytes: 1024 * 1024 * 1024 }
 
-/** Sources are tried in order; the first one that answers wins. */
+/**
+ * Sources are tried in order, and each carries its OWN owner/repo.
+ *
+ * That matters here: the Gitee namespace (`ph-wang`) is not the GitHub one (`WPH666-py`), and a
+ * single "owner" field shared between hosts would have quietly queried a repository that does not
+ * exist on one of them — a 404 that looks exactly like "no releases yet".
+ */
 export const DEFAULT_SOURCES = [
   // Gitee first: for users in China it is reachable when GitHub is not.
-  { id: 'gitee', kind: 'gitee', owner: 'WPH666-py', repo: 'ChinaClaude' },
+  { id: 'gitee', kind: 'gitee', owner: 'ph-wang', repo: 'ChinaClaude' },
   { id: 'github', kind: 'github', owner: 'WPH666-py', repo: 'ChinaClaude' },
 ]
 

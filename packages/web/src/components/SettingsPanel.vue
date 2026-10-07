@@ -769,7 +769,7 @@ function removeSaved(providerId: string) {
             <div class="st__author">
               <p class="st__authorLead">青岛理工大学 2022 级毕业生水哥，励志做中国人的 AI 和智能体。</p>
               <p class="st__authorBody">
-                这是 Claude Code 二次 Harness 化开发版 ClaudeCode-CN，剔除了所有风控点并将原有的 CLI
+                这是 Claude Code 二次 Harness 化开发版 ChinaClaude，剔除了所有风控点并将原有的 CLI
                 终端图形化。
               </p>
               <p class="st__authorBody">
@@ -790,7 +790,7 @@ function removeSaved(providerId: string) {
 
             <div class="st__kv">
               <span class="st__kvK">客户端</span>
-              <span class="st__kvV">Claude Code · CN</span>
+              <span class="st__kvV">ChinaClaude</span>
               <span class="st__kvK">界面</span>
               <span class="st__kvV">Vue 3 + Tauri（WebView2）</span>
               <span class="st__kvK">桥接</span>

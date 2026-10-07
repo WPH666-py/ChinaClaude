@@ -200,10 +200,7 @@ const balanceLabel = computed(() => (props.modelContext ? `${props.modelContext.
     <div class="sidebar__logoRow">
       <div class="brand">
         <span class="brand__mark">C</span>
-        <span class="brand__name">
-          Claude Code
-          <span class="brand__version">CN</span>
-        </span>
+        <span class="brand__name">ChinaClaude</span>
       </div>
       <button class="iconButton" type="button" title="折叠侧栏" @click="$emit('toggle-collapse')">
         <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">

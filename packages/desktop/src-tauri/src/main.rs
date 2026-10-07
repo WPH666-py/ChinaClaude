@@ -224,7 +224,7 @@ fn main() {
             // the label collide and setup panics ("a webview with label `main` already
             // exists"), so `app.windows` is intentionally absent from the config.
             let window = WebviewWindowBuilder::new(app, MAIN_WINDOW_LABEL, WebviewUrl::default())
-                .title("Claude Code · CN")
+                .title("ChinaClaude")
                 .inner_size(WINDOW_WIDTH, WINDOW_HEIGHT)
                 .min_inner_size(WINDOW_MIN_WIDTH, WINDOW_MIN_HEIGHT)
                 .center()

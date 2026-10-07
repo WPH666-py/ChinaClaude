@@ -20,3 +20,9 @@ packages/desktop/src-tauri/resources/
 # whole target/ tree stays local; build installers on your own machine.
 _probe/*.tgz
 
+# The launch animation, as delivered, sitting at the repo root.
+# The build uses packages/web/public/ChinaClaude-loading.mp4 — that is the canonical copy and the
+# one that ends up in dist/ and inside the installer. This one is kept only as the source file, so
+# it is ignored rather than committed a second time (0.28 MB twice for one asset).
+/ChinaClaude-loading.mp4
+

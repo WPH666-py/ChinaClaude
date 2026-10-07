@@ -85,6 +85,41 @@ const items = computed(() =>
   ),
 )
 
+/**
+ * The content still arriving, or null.
+ *
+ * A delta stream is live only until the CLI's assembled block for it lands — it sends the completed
+ * `thinking` / `text` frame right after the last fragment, and THAT is what the timeline keeps. So
+ * this exists purely to fill the gap before it: the gap that used to be a blank screen for the whole
+ * duration of a long answer.
+ */
+const streaming = computed(() => {
+  let live: BridgeEvent | null = null
+  for (const event of props.events) {
+    if (event.kind === 'thinking_delta' || event.kind === 'text_delta') live = event
+    else if (event.kind === 'thinking' || event.kind === 'text' || event.kind === 'tool_use') live = null
+  }
+  return live
+})
+
+/**
+ * The newest thinking-token estimate for the turn in flight.
+ *
+ * Retired by a `result`: the estimate describes work in progress, and leaving the last number on
+ * screen after the turn ends would present a mid-thought count as if it were the turn's size.
+ */
+const thinkingProgress = computed(() => {
+  const events = props.events
+  let latestIndex = -1
+  let resultIndex = -1
+  for (let i = 0; i < events.length; i++) {
+    if (events[i].kind === 'thinking_tokens') latestIndex = i
+    else if (events[i].kind === 'result') resultIndex = i
+  }
+  if (latestIndex < 0 || latestIndex < resultIndex) return null
+  return events[latestIndex]
+})
+
 /** The opening init frame becomes a header strip rather than a timeline row. */
 const initEvent = computed(() => props.events.find((event) => event.kind === 'init') ?? null)
 
@@ -515,6 +550,21 @@ function traceFields(event: BridgeEvent): Array<{ key: string; label: string; va
           </span>
         </div>
       </template>
+
+      <!--
+        Live reasoning. Rendered from the endpoint's own deltas while they arrive, then replaced by
+        the assembled block the CLI sends afterwards — which is what the timeline keeps.
+      -->
+      <div v-if="streaming" class="reason reason--live">
+        <div class="reason__head reason__head--live">
+          <span class="reason__pulse" />
+          <span>{{ streaming.kind === 'thinking_delta' ? '思考中' : '输出中' }}</span>
+          <span v-if="thinkingProgress" class="reason__summary">
+            约 {{ formatNumber(thinkingProgress.estimated ?? 0) }} tokens
+          </span>
+        </div>
+        <div class="reason__body reason__body--live">{{ streaming.text }}</div>
+      </div>
 
       <div v-if="busy" class="statsPills">
         <span class="statsPills__item"><span class="spinner" /> 处理中</span>

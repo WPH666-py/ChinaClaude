@@ -2,9 +2,12 @@
 
 export type EventKind =
   | 'init'
+  | 'status'
   | 'thinking_tokens'
   | 'thinking'
+  | 'thinking_delta'
   | 'text'
+  | 'text_delta'
   | 'tool_use'
   | 'tool_result'
   | 'user'
@@ -53,6 +56,21 @@ export interface BridgeEvent {
 
   // thinking_tokens
   estimated?: number
+  /** How much the latest progress frame added, for a counter that accumulates rather than re-reads. */
+  estimatedDelta?: number
+
+  // status: the CLI's own lifecycle reporting (e.g. 'requesting'), earlier than the first token.
+  status?: string
+
+  /**
+   * Streaming content, forwarded because the child runs with `--include-partial-messages`.
+   *
+   * These are EPHEMERAL: they never enter the bridge's replay log, so a reconnecting client will not
+   * see them again, and they carry no `seq` for the same reason.
+   */
+  transient?: boolean
+  /** Content-block index a delta belongs to, so fragments of one block stay distinguishable. */
+  index?: number
 
   // thinking / text / user
   text?: string

@@ -913,6 +913,52 @@ textarea {
   word-break: break-word;
 }
 
+/*
+ * Live streaming variant. The head is static rather than a disclosure — there is nothing to fold
+ * away while the text is still arriving — and the pulsing mark says it is STILL arriving: without it
+ * a pause between fragments reads as a finished answer.
+ */
+.reason__head--live {
+  cursor: default;
+}
+
+.reason__pulse {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--dsw-alias-state-business-primary);
+  animation: reasonPulse 1.1s ease-in-out infinite;
+}
+
+@keyframes reasonPulse {
+  0%,
+  100% {
+    opacity: 0.25;
+    transform: scale(0.8);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .reason__pulse {
+    animation: none;
+    opacity: 0.85;
+  }
+}
+
+/*
+ * Bounded height so a long answer cannot push the composer off screen while it streams. Nothing is
+ * lost by that: this is a preview, and the assembled block that replaces it is scrollable in full.
+ */
+.reason__body--live {
+  max-height: 220px;
+  overflow-y: auto;
+}
+
 /* Tool call card. */
 .tool {
   margin-bottom: 10px;

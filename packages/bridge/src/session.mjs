@@ -102,6 +102,22 @@ export function buildChildArgs(config) {
    */
   args.push('--allow-dangerously-skip-permissions')
 
+  /**
+   * Ask the CLI to forward the endpoint's own SSE deltas.
+   *
+   * WITHOUT THIS the stream is block-level: `assistant` frames arrive only once a content block is
+   * complete, so a long answer shows nothing at all until it is finished — the reasoning appears
+   * fully formed, and the only sign of life is the `thinking_tokens` estimator. With it, every
+   * `thinking_delta` / `text_delta` is forwarded as it arrives, which is what makes the reasoning
+   * visible while it is happening rather than after the fact.
+   *
+   * The completed-block frames still arrive afterwards, and they remain the source of truth for the
+   * timeline: the deltas are shown live and then superseded. That is deliberate — rendering from
+   * deltas alone would mean reconstructing blocks the CLI has already assembled correctly, including
+   * tool inputs, which arrive as `input_json_delta` fragments that are only valid once complete.
+   */
+  args.push('--include-partial-messages')
+
   if (config.model) args.push('--model', config.model)
   if (config.permissionMode) args.push('--permission-mode', config.permissionMode)
   if (config.cwd) args.push('--add-dir', config.cwd)
@@ -173,7 +189,22 @@ export function normalizeEvent(raw, sessionId) {
         }
       }
       if (raw.subtype === 'thinking_tokens') {
-        return { ...base, kind: 'thinking_tokens', estimated: raw.estimated_tokens }
+        // `estimated_tokens_delta` is how much THIS frame added, which is what a live counter wants
+        // to add to its own total rather than re-reading a number that also moves.
+        return {
+          ...base,
+          kind: 'thinking_tokens',
+          estimated: raw.estimated_tokens,
+          estimatedDelta: raw.estimated_tokens_delta,
+        }
+      }
+      /**
+       * Lifecycle frames (`requesting`, ...). They carry no content, but they are the earliest
+       * signal that a turn has actually started — earlier than the first token, which is what a
+       * "正在请求模型" state needs to be honest rather than a guess based on `busy`.
+       */
+      if (raw.subtype === 'status') {
+        return { ...base, kind: 'status', status: raw.status, transient: true }
       }
       // A tool call auto-denied without ever prompting (deny rule, dontAsk mode, ...).
       if (raw.subtype === 'permission_denied') {
@@ -186,6 +217,42 @@ export function normalizeEvent(raw, sessionId) {
         }
       }
       return null
+
+    /**
+     * Endpoint deltas, forwarded because the child runs with `--include-partial-messages`.
+     *
+     * Only thinking and text are surfaced. Tool-input fragments (`input_json_delta`) are deliberately
+     * dropped: half a JSON string is not renderable, and the completed `tool_use` block that follows
+     * carries the parsed input the UI actually shows. They are marked `transient` so they reach live
+     * listeners without entering the replay log — see `#pushTransient`.
+     */
+    case 'stream_event': {
+      const inner = raw.event
+      const delta = inner?.delta ?? {}
+      const parentToolUseId = raw.parent_tool_use_id ?? null
+      if (inner?.type !== 'content_block_delta') return null
+      if (delta.type === 'thinking_delta') {
+        return {
+          ...base,
+          kind: 'thinking_delta',
+          text: delta.thinking ?? '',
+          index: inner.index,
+          parentToolUseId,
+          transient: true,
+        }
+      }
+      if (delta.type === 'text_delta') {
+        return {
+          ...base,
+          kind: 'text_delta',
+          text: delta.text ?? '',
+          index: inner.index,
+          parentToolUseId,
+          transient: true,
+        }
+      }
+      return null
+    }
 
     case 'assistant': {
       // One event per completed content block; the UI wants block-level granularity.
@@ -486,7 +553,9 @@ export class ClaudeSession extends EventEmitter {
 
     const event = normalizeEvent(raw, this.id)
     if (event) {
-      this.#pushEvent(event)
+      // Transient events reach live listeners but never the replay log; see `#pushTransient`.
+      if (event.transient === true) this.#pushTransient(event)
+      else this.#pushEvent(event)
     }
     this.emit('raw', raw)
   }
@@ -516,6 +585,20 @@ export class ClaudeSession extends EventEmitter {
   /** The model a turn started right now would run on. */
   #billingModel() {
     return this.options.model ?? this.resolvedModel ?? this.initialModel ?? null
+  }
+
+  /**
+   * Announce an event that must NOT enter the replay buffer.
+   *
+   * Streaming deltas arrive dozens of times per content block. `history` is a 4000-entry ring that
+   * trims its oldest 1000 when full, so deltas in there would evict REAL conversation events within a
+   * single long answer — and a reconnecting client would replay a wall of text fragments instead of
+   * the message. They also carry no `seq`: that counter identifies the resumable log, and the SSE
+   * writer only emits an `id:` line when one is present, so leaving it off keeps `Last-Event-ID`
+   * pinned to the last event that actually exists in history.
+   */
+  #pushTransient(event) {
+    this.emit('event', { ...event, transient: true })
   }
 
   /** Events after `sinceSeq`, for stream resumption. */

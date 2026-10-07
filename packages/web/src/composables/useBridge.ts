@@ -267,6 +267,39 @@ export function useBridge() {
               // Drop anything at or below the cursor: a resumed stream can overlap.
               if (event.seq !== undefined && event.seq <= lastSeq) continue
               if (event.seq !== undefined) lastSeq = event.seq
+
+              /**
+               * Fold high-frequency streaming frames into one growing entry.
+               *
+               * The child runs with `--include-partial-messages`, so a single answer arrives as
+               * hundreds of token fragments. Pushing each one would grow `events` without bound and
+               * re-run every transcript computed on every fragment — the exact cost a live view must
+               * not add. Appending to the previous fragment of the same block keeps the array the
+               * size of a block-level stream while the text still grows in place.
+               *
+               * Progress ticks are replaced rather than appended for the same reason: only the newest
+               * estimate is ever displayed.
+               */
+              if (event.kind === 'thinking_delta' || event.kind === 'text_delta') {
+                const previous = events.value[events.value.length - 1]
+                if (
+                  previous &&
+                  previous.kind === event.kind &&
+                  previous.index === event.index &&
+                  previous.parentToolUseId === event.parentToolUseId
+                ) {
+                  previous.text = (previous.text ?? '') + (event.text ?? '')
+                  previous.at = event.at
+                  continue
+                }
+              } else if (event.kind === 'thinking_tokens') {
+                const previous = events.value[events.value.length - 1]
+                if (previous?.kind === 'thinking_tokens') {
+                  events.value[events.value.length - 1] = event
+                  continue
+                }
+              }
+
               events.value.push(event)
               // A closed session ends the stream server-side; reflect it in the list.
               if (event.kind === 'closed') void refreshSessions()

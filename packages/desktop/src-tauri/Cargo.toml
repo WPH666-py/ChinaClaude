@@ -1,6 +1,6 @@
 [package]
 name = "claude-code-cn"
-version = "0.1.1"
+version = "0.1.2"
 description = "Claude Code desktop client (CN build)"
 authors = ["Claudecode-CN"]
 edition = "2021"

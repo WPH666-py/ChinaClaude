@@ -14,6 +14,7 @@ import Composer from './components/Composer.vue'
 import DirectoryPicker from './components/DirectoryPicker.vue'
 import CatalogPanel from './components/CatalogPanel.vue'
 import SettingsPanel from './components/SettingsPanel.vue'
+import SplashScreen from './components/SplashScreen.vue'
 import UpdateDialog from './components/UpdateDialog.vue'
 import { useSettings, parseModelRef } from './composables/useSettings'
 import type { ProviderBalance, TranscriptSummary, UpdateCheck } from './types'
@@ -42,6 +43,16 @@ const sidebarCollapsed = ref(false)
 const tab = ref<'chat' | 'trace'>('chat')
 /** Set when the user explicitly asks for a new session, so polling never overrides it. */
 const setupPinnedByUser = ref(false)
+
+/**
+ * How long the launch splash stays up.
+ *
+ * A PRODUCT choice, not a technical one. The app is normally ready in well under a second, so almost
+ * all of this is the animation playing — it is a fixed cost paid on EVERY launch, forever. Named here
+ * rather than buried in the component so it is one edit to change; set it to 0 to skip the splash.
+ */
+const SPLASH_MS = 7000
+const splashOpen = ref(true)
 
 /**
  * The available update, if any.
@@ -869,5 +880,12 @@ function newSession() {
       @new-session="settingsOpen = false; newSession()"
       @open-transcript="onOpenTranscript"
     />
+
+    <!--
+      Launch splash, last in the DOM so it covers everything. It is an overlay, NOT a replacement
+      for the app: the shell mounts and initialises underneath it, so the main screen is already
+      ready when this lifts.
+    -->
+    <SplashScreen v-if="splashOpen" :duration-ms="SPLASH_MS" @done="splashOpen = false" />
   </div>
 </template>

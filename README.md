@@ -1,4 +1,4 @@
-# Claude Code · CN
+#  ChinaClaude
 
 把 Claude Code 做成一个可双击运行的 Windows 桌面客户端。界面与功能参照 Harness-CN，
 后端接国内可达的 Anthropic 兼容端点。

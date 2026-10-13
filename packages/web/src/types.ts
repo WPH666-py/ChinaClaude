@@ -361,11 +361,36 @@ export interface ProviderBalance {
 
 export interface Health {
   ok: boolean
+  /** The bridge PROTOCOL version, so a stale page can detect a mismatched bridge. */
   version: number
+  /**
+   * The installed app's own version, e.g. "0.2.0". The menu bar shows this one, because "which build
+   * am I running" is the question a user asks before reporting anything.
+   */
+  appVersion?: string
   binary: string
   baseUrl: string
   hasCredential: boolean
   sessions: number
+}
+
+/**
+ * What `bridge/src/pricing.mjs` `priceEvents()` returns: the session's turns priced with the user's
+ * own rate tables.
+ *
+ * Declared here rather than inferred at each use site because three unrelated surfaces display it —
+ * the sidebar's counter, the context window and the cost window — and an inferred shape that drifts
+ * would silently show one of them a zero.
+ */
+export interface PricedTimeline {
+  totalCny: number
+  pricedTurns: number
+  unpricedTurns: number
+  perModel: Array<{ model: string; label: string; cny: number; turns: number }>
+  /** False when nothing could be priced, so the UI can say "未知" instead of "¥0.00". */
+  priced: boolean
+  /** True only when a priced turn's rate actually varies by time of day. */
+  usesTimeOfDay: boolean
 }
 
 /** One skill / slash command as the CLI reports it in its initialize reply. */

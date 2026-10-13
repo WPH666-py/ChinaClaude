@@ -209,6 +209,33 @@ textarea {
   background: var(--dsw-alias-scrollbar-hover-l2);
 }
 
+/* ============================================================== app shell == */
+
+/*
+ * The menu bar (top) plus the frame (below it).
+ *
+ * WHY A FLEX ROW RATHER THAN A GRID ROW INSIDE `.frame`: the frame is a two-column grid for the
+ * sidebar and the conversation, and the collapse behaviour (`--rail`) is expressed as grid-template
+ * columns. Adding a full-width row would have meant reworking those rules to place a control that
+ * never collapses — so the bar is a sibling instead, and the frame below it is untouched apart from
+ * the height rule immediately after.
+ */
+.shell {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  overflow: hidden;
+  background: var(--dsw-alias-bg-base);
+}
+
+/* `.frame` carries `height: 100%` for the standalone case; inside the shell that would overflow by
+   exactly the height of the menu bar and push the composer off screen. */
+.shell > .frame {
+  flex: 1 1 auto;
+  height: auto;
+  min-height: 0;
+}
+
 /* ============================================================== app frame == */
 
 .frame {

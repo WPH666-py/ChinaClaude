@@ -35,6 +35,14 @@ const props = defineProps<{
   loadedSkills?: string[]
   loadedPlugins?: string[]
   loadedMcpServers?: string[]
+  /**
+   * Section to open on, set by the menu bar's 「API 密钥」 entry.
+   *
+   * Checked BEFORE the `?settings=` query parameter, which is a development affordance: a menu click
+   * must land on the page it names even when the URL still carries an older section from a previous
+   * headless screenshot run.
+   */
+  initialSection?: string
 }>()
 
 const emit = defineEmits<{
@@ -97,7 +105,8 @@ const activeRateSummary = computed(() => {
 
 // Development affordance: `?settings=permission|models|bundled|import|audit|about` opens straight to
 // a section, so each page is reachable in a headless screenshot without clicking through the rail.
-const requestedSection = new URLSearchParams(location.search).get('settings')
+// A section requested by the menu bar (`initialSection`) takes precedence over the URL.
+const requestedSection = props.initialSection ?? new URLSearchParams(location.search).get('settings')
 if (
   requestedSection === 'permission' ||
   requestedSection === 'models' ||

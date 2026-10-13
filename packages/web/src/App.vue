@@ -16,6 +16,7 @@ import CatalogPanel from './components/CatalogPanel.vue'
 import SettingsPanel from './components/SettingsPanel.vue'
 import SplashScreen from './components/SplashScreen.vue'
 import UpdateDialog from './components/UpdateDialog.vue'
+import TopMenu from './components/TopMenu.vue'
 import { useSettings, parseModelRef } from './composables/useSettings'
 import type { ProviderBalance, TranscriptSummary, UpdateCheck } from './types'
 import { priceEvents, isPeak } from '../../bridge/src/pricing.mjs'
@@ -39,6 +40,20 @@ const startError = ref<string | null>(null)
 const pickerOpen = ref(false)
 const catalogOpen = ref(false)
 const settingsOpen = ref(false)
+/**
+ * Which section of the settings window to open on.
+ *
+ * The menu bar's 「API 密钥」 has to land on the page where a key is actually entered; making the user
+ * find it themselves after clicking a menu item that names it would be a small betrayal. Passed as a
+ * prop rather than a query parameter so a menu click can retarget an already-open window.
+ */
+const settingsSection = ref<'general' | 'permission' | 'models' | 'pricing' | 'bundled' | 'import' | 'audit' | 'about'>('general')
+
+function openSettings(section: string) {
+  const allowed = ['general', 'permission', 'models', 'pricing', 'bundled', 'import', 'audit', 'about']
+  settingsSection.value = (allowed.includes(section) ? section : 'general') as typeof settingsSection.value
+  settingsOpen.value = true
+}
 const sidebarCollapsed = ref(false)
 const tab = ref<'chat' | 'trace'>('chat')
 /** Set when the user explicitly asks for a new session, so polling never overrides it. */
@@ -77,6 +92,23 @@ async function checkForUpdates() {
   } catch {
     // Unreachable is an ordinary outcome here: the app simply has no update to offer.
   }
+}
+
+/**
+ * The update check the MENU BAR runs.
+ *
+ * Different from the startup check in one way that matters: a person who clicked 「检查更新」 is owed
+ * an answer either way, while the automatic check is silent unless there is something to install.
+ * So this one always returns its result to the caller (the menu bar reports it inline) and still
+ * raises the dialog whenever there is something installable to act on.
+ */
+async function checkForUpdatesFromMenu() {
+  const result = await bridge.checkUpdate()
+  if (result.ok && result.available && result.installable && result.asset) {
+    updateCheck.value = result
+    updateOpen.value = true
+  }
+  return result
 }
 
 /**
@@ -604,7 +636,26 @@ function newSession() {
 </script>
 
 <template>
-  <div class="frame" :class="{ 'frame--rail': sidebarCollapsed }">
+  <div class="shell">
+    <!--
+      The menu bar sits OUTSIDE `.frame`, which is a two-column grid: putting a full-width row inside
+      it would need a grid-template change and would break the sidebar's own layout. As a flex sibling
+      the bar is a plain row above everything, and the frame keeps the height it always had.
+    -->
+    <TopMenu
+      :version="bridge.health.value?.appVersion ?? ''"
+      :cwd="bridge.activeSession.value?.cwd ?? null"
+      :session-id="bridge.activeSessionId.value"
+      :session-events="bridge.events.value"
+      :sessions="bridge.sessions.value"
+      :session-cost="sessionCost"
+      :model-context="modelContext"
+      :check-update="checkForUpdatesFromMenu"
+      @open-settings="openSettings"
+      @select-session="openExisting"
+    />
+
+    <div class="frame" :class="{ 'frame--rail': sidebarCollapsed }">
     <div class="sidebarCol">
       <Sidebar
         :sessions="bridge.sessions.value"
@@ -868,6 +919,7 @@ function newSession() {
       v-if="settingsOpen"
       :bridge="bridge"
       :catalog="bridge.catalog.value"
+      :initial-section="settingsSection"
       :active-model="bridge.activeSession.value?.model ?? null"
       :session-permission-mode="bridge.activeSession.value?.permissionMode ?? null"
       :session-count="bridge.sessions.value.length"
@@ -887,5 +939,6 @@ function newSession() {
       ready when this lifts.
     -->
     <SplashScreen v-if="splashOpen" :duration-ms="SPLASH_MS" @done="splashOpen = false" />
+    </div>
   </div>
 </template>

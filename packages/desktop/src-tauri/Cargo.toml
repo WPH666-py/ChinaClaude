@@ -1,6 +1,6 @@
 [package]
 name = "claude-code-cn"
-version = "0.1.2"
+version = "0.2.0"
 description = "Claude Code desktop client (CN build)"
 authors = ["Claudecode-CN"]
 edition = "2021"
@@ -14,7 +14,9 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = [] }
+# `devtools` is what makes the menu bar's 开发者工具 entry work in a RELEASE build: without the
+# feature the API is compiled out, so the command would exist but never open anything.
+tauri = { version = "2", features = ["devtools"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 

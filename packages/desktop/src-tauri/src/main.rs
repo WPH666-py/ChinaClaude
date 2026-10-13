@@ -84,6 +84,36 @@ fn bridge_info(info: tauri::State<'_, BridgeInfo>) -> BridgeInfo {
     info.inner().clone()
 }
 
+/// Restart the whole application (menu bar → 重启).
+///
+/// `restart` runs the normal exit path first, and that path kills the bridge child — which is why
+/// this must go through the shell rather than through the bridge: a child process cannot re-exec the
+/// parent, and a second bridge left running behind a new one would hold the same port range and the
+/// same session list.
+#[tauri::command]
+fn shell_restart(app: tauri::AppHandle) {
+    app.restart();
+}
+
+/// Exit the application (menu bar → 退出).
+///
+/// 0 rather than a failure code: the user asked for this, so it is a normal outcome, and a non-zero
+/// exit is what Windows reports as a crash in the event log.
+#[tauri::command]
+fn shell_quit(app: tauri::AppHandle) {
+    app.exit(0);
+}
+
+/// Open the webview's developer tools (menu bar → 开发者工具).
+///
+/// Requires the `devtools` feature on the tauri crate — in a release build the API is compiled out
+/// without it, and the menu entry would fail with a confusing "command not found".
+#[tauri::command]
+fn shell_devtools(window: tauri::WebviewWindow) -> Result<(), String> {
+    window.open_devtools();
+    Ok(())
+}
+
 /// Resolve the staged runtime directory.
 ///
 /// One directory serves both cases: `src-tauri/resources/sidecar` is the dev-time location
@@ -196,7 +226,12 @@ fn spawn_bridge(dir: &PathBuf) -> Result<(Child, String), String> {
 
 fn main() {
     tauri::Builder::default()
-        .invoke_handler(tauri::generate_handler![bridge_info])
+        .invoke_handler(tauri::generate_handler![
+            bridge_info,
+            shell_restart,
+            shell_quit,
+            shell_devtools
+        ])
         .setup(|app| {
             // Development escape hatch: attach to a bridge the developer already started
             // (for example to keep one session alive across reloads).

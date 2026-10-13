@@ -12,7 +12,8 @@ import { join } from 'node:path'
 import { ClaudeSession, DEFAULT_BASE_URL } from './session.mjs'
 import { createScanner } from './discovery.mjs'
 import { listDirectories, listRoots } from './directories.mjs'
-import { bundledInventory, NOT_BUNDLED } from './bundled.mjs'
+import { bundledInventory, builtinPluginList, NOT_BUNDLED } from './bundled.mjs'
+import { AUTHOR, SHOP_PRODUCTS, createLogRing, createFeedbackInbox, revealLogFile } from './shell.mjs'
 import { scanDirectory, groupFindings, scannerStatus } from './vet.mjs'
 import { ENGINE_VERSION } from './vet-engine-version.mjs'
 import { listTranscripts, groupTranscripts, transcriptToMarkdown } from './transcripts.mjs'
@@ -22,6 +23,31 @@ import { saveAttachments, attachmentsUsage, clearAttachments } from './attachmen
 import { checkForUpdate, createUpdateInstaller, publicCheckResult, DEFAULT_SOURCES } from './update.mjs'
 
 const MAX_BODY_BYTES = 1024 * 1024
+
+/**
+ * Load a feature module on first use.
+ *
+ * WHY NOT A STATIC IMPORT: every feature behind the menu bar (记忆 / 规则 / 检查点 / 防护 / git /
+ * 视觉) is optional to the app's actual job, which is running a session. A static import would make
+ * any one of them — a syntax error in a hand-written module, a file an installer failed to copy —
+ * take the whole bridge down at startup, i.e. turn "one panel is broken" into "the app does not
+ * open". Loaded lazily, the same failure is a sentence inside one window, and the rest of the app
+ * never learns about it.
+ */
+const featureCache = new Map()
+async function feature(name) {
+  if (!featureCache.has(name)) featureCache.set(name, import(`./${name}.mjs`))
+  return await featureCache.get(name)
+}
+
+/** Run a feature route, turning a module-level failure into the shape every caller already handles. */
+async function withFeature(name, run) {
+  try {
+    return await run(await feature(name))
+  } catch (error) {
+    return { ok: false, error: `${name} 模块不可用：${String(error?.message ?? error)}` }
+  }
+}
 
 function readJsonBody(req) {
   return new Promise((resolve, reject) => {
@@ -98,6 +124,16 @@ export function createBridgeServer(options) {
   })
 
   const updater = createUpdateInstaller()
+  /**
+   * The shell's own log ring, teed onto the process's stdout/stderr.
+   *
+   * Created BEFORE any session exists, because the lines that matter most are the ones from before
+   * anything worked: a missing binary, a handshake that never arrived, a spawn that failed. A ring
+   * that only starts recording once a session is up would be blind to exactly those.
+   */
+  const logRing = createLogRing()
+  logRing.tee()
+  const feedback = createFeedbackInbox()
   const appVersion = options.appVersion ?? process.env.CCCN_APP_VERSION ?? '0.0.0'
   /**
    * The last check's result, and the ONLY place a download URL may come from.
@@ -126,7 +162,10 @@ export function createBridgeServer(options) {
       if (req.method === 'GET' && url.pathname === '/api/health') {
         sendJson(res, 200, {
           ok: true,
+          // Protocol version, so a stale page can detect a mismatched bridge.
           version: 1,
+          /** The INSTALLED version, which is what the menu bar displays. */
+          appVersion,
           binary: options.binary,
           baseUrl: defaults.baseUrl,
           hasCredential: Boolean(defaults.authToken),
@@ -198,6 +237,166 @@ export function createBridgeServer(options) {
           bundled: items,
           notBundled: NOT_BUNDLED,
         })
+        return
+      }
+
+      // ---- plugin manager (the menu bar's 插件管理 window) ----------------------
+      /**
+       * The upstream plugins this build was asked to carry, each with how its capability is provided.
+       *
+       * Served from a registry rather than by scanning node_modules: this client does not install
+       * plugins at runtime, so "what is here" is a fact about the build, and reading it from a
+       * directory would report whatever happened to be on disk instead of what shipped.
+       */
+      if (req.method === 'GET' && url.pathname === '/api/plugins') {
+        sendJson(res, 200, { plugins: builtinPluginList(), version: appVersion })
+        return
+      }
+
+      // ---- 运行日志 ------------------------------------------------------------
+      if (req.method === 'GET' && url.pathname === '/api/shell/logs') {
+        const since = Number(url.searchParams.get('since') ?? 0) || 0
+        sendJson(res, 200, logRing.snapshot(since))
+        return
+      }
+
+      if (req.method === 'POST' && url.pathname === '/api/shell/logs/clear') {
+        sendJson(res, 200, logRing.clear())
+        return
+      }
+
+      if (req.method === 'POST' && url.pathname === '/api/shell/logs/reveal') {
+        sendJson(res, 200, revealLogFile(logRing.file))
+        return
+      }
+
+      // ---- 作者信息 / 休闲食品商城 ---------------------------------------------
+      if (req.method === 'GET' && url.pathname === '/api/shell/author') {
+        sendJson(res, 200, AUTHOR)
+        return
+      }
+
+      if (req.method === 'GET' && url.pathname === '/api/shop/catalog') {
+        sendJson(res, 200, { products: SHOP_PRODUCTS })
+        return
+      }
+
+      // ---- 评价与反馈 ----------------------------------------------------------
+      if (req.method === 'GET' && url.pathname === '/api/feedback') {
+        sendJson(res, 200, { entries: feedback.list(), file: feedback.file })
+        return
+      }
+
+      if (req.method === 'POST' && url.pathname === '/api/feedback') {
+        const body = await readJsonBody(req)
+        const result = feedback.submit({ message: body.message, email: body.email })
+        // 200 with ok:false for a form the user must fix: that is a result, not a transport error.
+        sendJson(res, 200, result)
+        return
+      }
+
+      // ---- 项目记忆 (hindsight-coding-agents port) ------------------------------
+      if (url.pathname === '/api/memory') {
+        const answer = await withFeature('memory', async (mod) => {
+          if (req.method === 'GET') return await mod.listMemory({ cwd: url.searchParams.get('cwd') ?? '' })
+          const body = await readJsonBody(req)
+          if (body.action === 'add') return await mod.addMemory({ cwd: body.cwd, text: body.text, kind: body.kind, tags: body.tags })
+          if (body.action === 'remove') return await mod.removeMemory({ cwd: body.cwd, id: body.id })
+          if (body.action === 'export') return await mod.exportMemory({ cwd: body.cwd })
+          return { ok: false, error: `未知操作：${String(body.action)}` }
+        })
+        sendJson(res, 200, answer)
+        return
+      }
+
+      // ---- 规则引擎 (rule-engine port) -----------------------------------------
+      if (url.pathname === '/api/rules') {
+        const answer = await withFeature('rules', async (mod) => {
+          if (req.method === 'GET') return await mod.listRules()
+          const body = await readJsonBody(req)
+          if (body.action === 'save') return await mod.saveRule({ rule: body.rule })
+          if (body.action === 'delete') return await mod.deleteRule({ id: body.id })
+          if (body.action === 'test') return await mod.evaluateRules({ text: body.text, cwd: body.cwd })
+          return { ok: false, error: `未知操作：${String(body.action)}` }
+        })
+        sendJson(res, 200, answer)
+        return
+      }
+
+      // ---- 时间机器 (time-machine port) ----------------------------------------
+      if (url.pathname === '/api/checkpoints') {
+        const answer = await withFeature('checkpoints', async (mod) => {
+          if (req.method === 'GET') {
+            const what = url.searchParams.get('what') ?? 'list'
+            if (what === 'usage') return await mod.checkpointUsage()
+            return await mod.listCheckpoints({ cwd: url.searchParams.get('cwd') ?? '' })
+          }
+          const body = await readJsonBody(req)
+          if (body.action === 'create') return await mod.createCheckpoint({ cwd: body.cwd, label: body.label, note: body.note })
+          if (body.action === 'diff') return await mod.diffCheckpoint({ cwd: body.cwd, id: body.id })
+          if (body.action === 'restore') return await mod.restoreCheckpoint({ cwd: body.cwd, id: body.id, files: body.files })
+          if (body.action === 'delete') return await mod.deleteCheckpoint({ cwd: body.cwd, id: body.id })
+          if (body.action === 'usage') return await mod.checkpointUsage()
+          return { ok: false, error: `未知操作：${String(body.action)}` }
+        })
+        sendJson(res, 200, answer)
+        return
+      }
+
+      // ---- 安全防护 (defend port) ----------------------------------------------
+      if (url.pathname === '/api/defend') {
+        const answer = await withFeature('defend', async (mod) => {
+          if (req.method === 'GET') return await mod.defendStats()
+          const body = await readJsonBody(req)
+          if (body.action === 'scan') return await mod.scanText({ text: body.text, where: body.where ?? 'panel' })
+          if (body.action === 'clear') return await mod.clearDefend()
+          return { ok: false, error: `未知操作：${String(body.action)}` }
+        })
+        sendJson(res, 200, answer)
+        return
+      }
+
+      // ---- 代码管理 (git-panel port) -------------------------------------------
+      if (url.pathname === '/api/git') {
+        const answer = await withFeature('gitpanel', async (mod) => {
+          if (req.method === 'GET') {
+            const cwd = url.searchParams.get('cwd') ?? ''
+            const what = url.searchParams.get('what') ?? 'status'
+            if (what === 'available') return await mod.gitAvailable()
+            if (what === 'log') return await mod.gitLog({ cwd, limit: Number(url.searchParams.get('limit') ?? 20) || 20 })
+            return await mod.gitStatus({ cwd })
+          }
+          const body = await readJsonBody(req)
+          if (body.action === 'diff') return await mod.gitDiff({ cwd: body.cwd, file: body.file, staged: body.staged })
+          if (body.action === 'commit') return await mod.gitCommit({ cwd: body.cwd, message: body.message, files: body.files })
+          if (body.action === 'available') return await mod.gitAvailable()
+          return { ok: false, error: `未知操作：${String(body.action)}` }
+        })
+        sendJson(res, 200, answer)
+        return
+      }
+
+      // ---- 图片理解 (modlens port) ---------------------------------------------
+      if (req.method === 'GET' && url.pathname === '/api/vision/status') {
+        const answer = await withFeature('vision', async (mod) => await mod.visionStatus({ skillsRoot: options.skillsRoot }))
+        sendJson(res, 200, answer)
+        return
+      }
+
+      if (req.method === 'GET' && url.pathname === '/api/vision/images') {
+        const answer = await withFeature('vision', async (mod) =>
+          await mod.listImages({ dir: url.searchParams.get('dir') ?? '', limit: Number(url.searchParams.get('limit') ?? 200) || 200 }),
+        )
+        sendJson(res, 200, answer)
+        return
+      }
+
+      if (req.method === 'POST' && url.pathname === '/api/vision/read') {
+        const body = await readJsonBody(req)
+        const answer = await withFeature('vision', async (mod) =>
+          await mod.readImage({ skillsRoot: options.skillsRoot, path: body.path, focus: body.focus }),
+        )
+        sendJson(res, 200, answer)
         return
       }
 
@@ -394,6 +593,43 @@ export function createBridgeServer(options) {
         sessions.set(session.id, session)
         session.on('exit', () => {
           // Keep the session object for history; mark it closed via status.
+        })
+
+        /**
+         * Mirror the session's own log lines into the shell ring.
+         *
+         * The session log is where "claude.exe exited with code 1" lands, and it is written to the
+         * per-session SSE channel — which a user looking at the menu bar's log window may not have
+         * open. Copying the lines into the ring is what makes one window show the whole story.
+         */
+        session.on('log', (line) =>
+          logRing.append(String(line?.level ?? 'info'), String(line?.text ?? line?.message ?? line ?? ''), 'session'),
+        )
+
+        /**
+         * Let 安全防护 look at what the session is carrying.
+         *
+         * OBSERVE, NEVER REWRITE: a hit is recorded and counted, and the event still reaches the UI
+         * byte for byte. Silently editing a tool result to hide a secret would break the transcript
+         * the user is reading, and would make the app's output differ from what the model saw — a
+         * far worse bug than the leak it would be hiding. Blocks are surfaced as a verdict for the
+         * user to act on, which is also the only thing this layer can honestly promise.
+         */
+        session.on('event', (event) => {
+          if (!event || event.kind === 'log' || event.kind === 'closed') return
+          void withFeature('defend', async (mod) => {
+            let text = ''
+            try {
+              text = JSON.stringify(event)
+            } catch {
+              return null
+            }
+            // Size guard: one 2 MB tool result must not turn every event into a stringify + scan.
+            if (!text || text.length > 262144) return null
+            return await mod.guard({ text, where: `session:${event.kind ?? 'event'}`, action: 'observe' })
+          }).catch(() => {
+            // A protection layer that can break the transcript is worse than no protection layer.
+          })
         })
 
         session.start()

@@ -148,6 +148,22 @@ _sidecar/              构建产物：node.exe + bridge/
 | GET | `/api/update` | 查更新：多源取最新，回 `{ok, current, latest, available, installable, asset, errors}`。**asset 里不含下载 url** |
 | POST | `/api/update/download` | 开始下载上一次检查找到的安装包（202 立即返回，地址取自桥内存而非请求体） |
 | GET | `/api/update/status` | 下载进度 `{phase, received, total, verified, error}`；`verified: null` = 该源没给校验值 |
+| GET | `/api/plugins` | 插件管理窗口的清单：上游插件名 / 版本 / 本版如何内置 / 可核对的入口 |
+| GET | `/api/shell/logs?since=` | 桥接进程日志（内存环形缓冲 + 游标增量，附日志文件路径与体积） |
+| POST | `/api/shell/logs/clear` | 清空内存缓冲与日志文件 |
+| POST | `/api/shell/logs/reveal` | 在文件管理器中定位日志文件 |
+| GET | `/api/shell/author` | 作者信息卡（微信号 / 邮箱 / 仓库地址） |
+| GET | `/api/shop/catalog` | 休闲食品商城商品表（图片随包内置，不热链） |
+| GET | `/api/feedback` | 本机已保存的反馈条目 |
+| POST | `/api/feedback` | 保存反馈并返回预填好的 `mailto:`；**不会假装已发送** |
+| GET/POST | `/api/memory` | 项目记忆：`list` / `add` / `remove` / `export`（写出 `CLAUDE.memory.md`） |
+| GET/POST | `/api/rules` | 规则引擎：`list` / `save` / `delete` / `test` |
+| GET/POST | `/api/checkpoints` | 时间机器：`list` / `usage` / `create` / `diff` / `restore` / `delete` |
+| GET/POST | `/api/defend` | 安全防护：`stats` / `scan` / `clear` |
+| GET/POST | `/api/git` | 代码管理：`available` / `status` / `log` / `diff` / `commit` |
+| GET | `/api/vision/status` | modlens 是否可用，以及不可用时的真实原因（含 doctor 输出） |
+| GET | `/api/vision/images?dir=` | 列出一个目录里的图片，供挑选 |
+| POST | `/api/vision/read` | 对单张图片取结构化视觉证据 |
 | POST | `/api/update/install` | 运行已下载的安装器（`/S`）；未下载完成时返回 409 |
 | POST | `/api/balance` | 读取服务商账户余额：`{baseUrl, apiKey, balanceUrl?, balancePath?}` |
 
@@ -862,6 +878,74 @@ Claude Code 从 `<root>/.claude/skills/<name>/SKILL.md` 加载技能，也能加
 格式重做成了「导出 MD」。**上游包没有内置**：它可移植的部分面向 DSH 会话存储，本应用没有
 这种存储；这一点与理由一起写在 `NOT_BUNDLED` 里，界面上可见。
 
+
+---
+
+## 顶部菜单栏与内置插件
+
+界面顶部有一条常驻菜单栏，条目与参考实现（Harness-CN）一一对应：
+
+`重启 · 运行日志 · 插件管理 · 检查更新 · API 密钥 · 作者信息 · 休闲食品商城 · 评价与反馈 · 开发者工具 · 退出`
+
+**为什么是自绘的条，而不是原生菜单**：这十项里有七项要打开一个**窗口**（日志要跟随、商城要网格、
+反馈要能显示"已保存/待发送"）。原生菜单只能发一个命令，状态没地方显示，还得为每个平台各写一遍。
+
+**为什么它站在 `.frame` 外面**：`.frame` 是「侧栏 + 对话」两列网格，收起态（`--rail`）是用
+`grid-template-columns` 表达的。把一条整宽的行塞进网格里，就得把那套规则重写一遍；作为 flex
+兄弟节点，条是条、框架还是原来的框架，只多一条 `.shell > .frame { height: auto }`
+（否则 `.frame` 自带的 `height: 100%` 会正好溢出菜单栏的高度，把输入框顶出屏幕）。
+
+### 菜单项与实现
+
+| 菜单项 | 做什么 | 实现要点 |
+| --- | --- | --- |
+| 重启 | 重启整个应用 | Tauri 命令 `shell_restart`；`app.restart()` 会先走退出路径把桥杀掉，否则新进程会和旧桥抢端口 |
+| 运行日志 | 桥接进程日志窗口 | 内存环形缓冲（最近 2000 行）+ 镜像到 `%LOCALAPPDATA%\ChinaClaude\logs\bridge.log`；按 `seq` 游标增量拉取，丢弃的行数会显示出来而不是被藏掉 |
+| 插件管理 | 内置插件清单 + 功能入口 | 只读（见下）；每行可展开「打开功能」 |
+| 检查更新 | 查 GitHub / Gitee 最新版本 | 手动路径「点了就要有答复」：有没有更新都回一句话；自动检查仍然只在有得装时才弹窗 |
+| API 密钥 | 直达「设置 → 模型」 | 通过 `initialSection` 属性打开指定分区，而不是靠 URL 参数 |
+| 作者信息 | 作者卡片，微信号点击复制 | 异步剪贴板被拒时回退到选区复制，两条路都失败才报错 |
+| 休闲食品商城 | 商品网格（9 件） | 图片随包发布（`packages/web/public/shop/`），不热链；点开是外部链接，应用不碰交易 |
+| 评价与反馈 | 反馈表单 | 先落盘再给 `mailto:`；**没有服务器就不说"已发送"** |
+| 开发者工具 | 打开 webview DevTools | Tauri 命令 `shell_devtools`，release 构建需要 tauri crate 的 `devtools` feature，否则这个 API 会被编译掉 |
+| 退出 | 退出应用 | Tauri 命令 `shell_quit`，退出码 0 |
+
+### 「内置」到底是什么意思
+
+被要求内置的是十个 DSH 插件。它们**都不能在本客户端里直接运行** —— 本应用跑的是 `claude.exe`，
+没有 Cordis/DSH 运行时。所以逐个给出的是**能力**，而不是把包塞进 node_modules：
+
+| 上游插件 | 本版怎么内置 | 可核对入口 |
+| --- | --- | --- |
+| `@jieai/dsh-plugin-vet` | 扫描引擎原样内置（20 条规则） | `vendor/vet/scanner-bin/` · `/api/vet/scan` |
+| `@liustack/modlens` | 技能随包 + 新增取证据端点 | `vendor/skills/modlens/` · `/api/vision/read` |
+| `@vectorize-io/hindsight-coding-agents` | 自建「项目记忆」：按工作目录存条目、可导出 `CLAUDE.memory.md` | `bridge/memory.mjs` |
+| `billion-context-dsh` | 自建「上下文」：按事件统计 token 与缓存命中、可一键 `/compact` | `bridge/context.mjs` |
+| `dsh-chat-import` | 自建「导入会话」：直读 Claude Code 的 `projects/*.jsonl` | `bridge/transcripts.mjs` |
+| `dsh-cost-meter` | 自建计价：DeepSeek 峰谷价目表，按轮计费并区分缓存命中 | `bridge/pricing.mjs` |
+| `dsh-rule-engine` | 自建「规则引擎」：关键字 / 正则命中即标注、可追加提示 | `bridge/rules.mjs` |
+| `dsh-defend` | 自建「安全防护」：扫密钥 / 危险命令 / 外传，**只记隐去后的片段** | `bridge/defend.mjs` |
+| `@goodandready/dsh-time-machine` | 自建「时间机器」：文件副本快照，比对与单文件回滚，**不依赖 git** | `bridge/checkpoints.mjs` |
+| `@xbzbing/dsh-git-panel` | 自建「代码管理」：状态 / 差异 / 历史 / 提交 | `bridge/gitpanel.mjs` |
+
+三条刻意的取舍，写在代码里也写在这里：
+
+1. **「内置」分两种，界面上必须说清**：`vendored`（随包携带上游文件）与 `native`（按同一思路
+   重写）。把两者混成一句"已内置"，会让"与上游一致"变成一句无法核对的话 —— 所以插件管理窗口每行
+   都标了类别，并给出证据路径与端点。
+2. **安全防护只看不改**：命中会记录、计数、给出裁决，但**不会改写事件内容**。为了让某个密钥不出现在
+   界面上而偷偷改动工具结果，会让用户看到的记录与模型看到的输入不一致 —— 那比它想遮住的问题更糟。
+3. **不确定就说不确定**：本机没装 git（确实没有），代码管理窗口给出的是安装提示与「重新检测」，
+   而不是一个空列表；modlens 没配视觉 provider 时给的是 `doctor` 的原话，而不是一个假装的加载动画。
+
+> 版本对齐：上表里的版本号是**参照机上装的那一版**（`~/.dsh/profiles/desktop`），也就是这些实现
+> 写的时候对着的上游。`modlens` 本地随包的是 3.26.5，与参照机的 3.26.1 不同，插件管理窗口会把两行
+> 都显示出来，不做"取一个好看的"。
+
+**存储位置**：菜单栏背后的功能都写在 `%LOCALAPPDATA%\ChinaClaude\`（可用 `CCCN_DATA_DIR`
+覆盖，测试就是靠它指向临时目录）：`logs/`、`memory/`、`checkpoints/`、`defend/`、`rules.json`、
+`feedback.jsonl`。路径只在一处决定（`bridge/paths.mjs`）—— 每个功能各发明一个 dotfolder，
+是这类应用最后没人敢清理的原因。
 
 ---
 

@@ -1216,6 +1216,15 @@ autofocus、确认没有任何全局 `keydown` 绑定 —— 都无法解释。�
 > | --- | --- | --- | --- |
 > | 完整（本地） | `pnpm --filter @cccn/desktop build` | 约 250 MB | 内置 claude.exe + node.exe + 桥 + 技能 + 审计引擎 |
 > | 公开发布 | 同上，先把 `resources/sidecar/claude.exe` 从 `bundle.resources` 摘掉 | **24.43 MB** | node.exe + 桥 + 技能 + 审计引擎，**不含 claude.exe** |
+> | 公开发布（0.2.0 起的做法） | `pnpm --filter @cccn/desktop tauri -- build --config src-tauri/tauri.release.conf.json` | **26.14 MB**（0.2.0 实测） | 同上，**不含 claude.exe** |
+>
+> 手工摘资源那一步在 0.2.0 被换掉了：`src-tauri/tauri.release.conf.json` 只覆盖
+> `bundle.resources`，于是发布前不必改 `tauri.conf.json`、发完也不必改回来 —— 需要「记得改回来」
+> 的步骤，迟早在某一次发布里被忘掉，而那次发出去的包会带着 Anthropic 的签名二进制。
+>
+> 发到 Gitee 用 `packages/desktop/scripts/publish-gitee-release.ps1`：Gitee 没有 CLI，脚本从
+> Windows 凭据管理器读 `git:https://gitee.com` 那条凭据做 Basic 认证 —— 密钥不落盘、不进命令行、
+> 不进 shell 历史。GitHub 一侧继续用 `gh release create`（0.2.0 已用这条路径发布）。
 >
 > 公开发布档不含 `claude.exe` 是**有意的**：它是 Anthropic 的专有软件（`LICENSE.md` 写明
 > `© Anthropic PBC. All rights reserved.`），由每位使用者按自己的凭据自行获取。

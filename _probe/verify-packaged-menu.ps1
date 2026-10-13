@@ -1,4 +1,4 @@
-# Verify the PACKAGED app end to end: launch the release binary, discover the bridge port from the
+﻿# Verify the PACKAGED app end to end: launch the release binary, discover the bridge port from the
 # bridge's own process tree, then exercise the menu-bar endpoints over HTTP.
 #
 # WHY NOT `verify-package.ps1`: that script looks for the listening port on the APP's pid, but the

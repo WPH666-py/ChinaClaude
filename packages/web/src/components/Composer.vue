@@ -21,6 +21,15 @@ import { useBridge } from '../composables/useBridge'
 
 const props = defineProps<{
   disabled: boolean
+  /**
+   * A draft to put back into the box, with a nonce so the SAME text can be restored twice.
+   *
+   * Needed because `submit()` clears the box the moment it emits, and a send can now come back held
+   * for confirmation. Without this, "cancel" would mean "your text is gone" — the one outcome a
+   * safety check must never produce. A plain string would not do: restoring the same text after a
+   * second, identical cancel has to fire again, and a watcher on an unchanged value never does.
+   */
+  draft?: { text: string; nonce: number } | null
   /** A turn is in flight (running, awaiting approval, or awaiting a dialog). */
   busy: boolean
   /** True specifically while the CLI is parked on an approval ask. */
@@ -253,6 +262,24 @@ function submit() {
   text.value = ''
   requestAnimationFrame(autoGrow)
 }
+
+/**
+ * Put a held draft back into the box.
+ *
+ * Watches the NONCE rather than the text: see the `draft` prop's comment — an unchanged string would
+ * silently fail to restore on a repeated cancel, which is exactly when the user is most annoyed.
+ */
+watch(
+  () => props.draft?.nonce ?? 0,
+  (nonce, previous) => {
+    if (nonce === previous || !props.draft) return
+    text.value = props.draft.text
+    requestAnimationFrame(() => {
+      autoGrow()
+      box.value?.focus()
+    })
+  },
+)
 
 /** Ctrl+Enter sends when the Enter-to-send preference is off. */
 function onKeydown(event: KeyboardEvent) {

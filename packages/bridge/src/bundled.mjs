@@ -118,7 +118,7 @@ export const BUILTIN_PLUGINS = [
     summary: '跨会话记忆：把项目里定下来的事实、决定和坑存下来，下个会话直接用，不重复推导。',
     port: {
       kind: 'native',
-      detail: '自建「项目记忆」：按工作目录存条目，可注入会话提示，可导出为 CLAUDE.md。',
+      detail: '自建「项目记忆」：按工作目录存条目，新建会话时经 --append-system-prompt 注入（上限 4000 字，最近的优先）。',
       evidence: 'bridge/memory.mjs',
       endpoint: '/api/memory',
       feature: 'memory',
@@ -170,7 +170,7 @@ export const BUILTIN_PLUGINS = [
     summary: '规则引擎：把「这种情况要这样做」写成规则，命中时给标签、给提示，必要时补进提示词。',
     port: {
       kind: 'native',
-      detail: '自建「规则引擎」：规则存本机，按关键字/正则匹配待发送内容，命中即标注并可追加提示。',
+      detail: '自建「规则引擎」：规则存本机，发送前在桥里判定 —— 命中即标注、可追加提示、拦截会先请你确认一次。',
       evidence: 'bridge/rules.mjs',
       endpoint: '/api/rules',
       feature: 'rules',
@@ -183,7 +183,7 @@ export const BUILTIN_PLUGINS = [
     summary: '安全防护：在工具结果流出前扫一遍，命中密钥、危险命令就拦下来并留痕。',
     port: {
       kind: 'native',
-      detail: '自建「安全防护」：对会话事件与待发送内容做规则匹配，统计扫描量/命中量并保留最近命中。',
+      detail: '自建「安全防护」：扫会话事件与待发送内容；拦截级命中会在发送前请你确认一次，记录里只留隐去后的片段。',
       evidence: 'bridge/defend.mjs',
       endpoint: '/api/defend',
       feature: 'defend',

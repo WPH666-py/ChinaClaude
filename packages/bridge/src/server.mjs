@@ -134,6 +134,90 @@ export function createBridgeServer(options) {
   const logRing = createLogRing()
   logRing.tee()
   const feedback = createFeedbackInbox()
+
+  /**
+   * 项目记忆 → `--append-system-prompt`。
+   *
+   * 为什么不靠「导出成 CLAUDE.memory.md」：那个文件名 CLI 不会自动读（它只读 `CLAUDE.md`），
+   * 所以导出对会话本身没有任何影响 —— 这一条是核对出来的，不是猜的。真正生效的是 CLI 现成的
+   * 钩子：spawn 时把附录交给子进程，`session.mjs` 一直在等这个参数，只是从来没人传。
+   *
+   * 任何失败都退化成「不注入」而不是抛错：记忆是增强，不能因为它让会话建不起来。
+   */
+  async function memoryAppendix(cwd) {
+    if (!cwd) return undefined
+    const answer = await withFeature('memory', async (mod) => await mod.memoryForPrompt({ cwd }))
+    if (!answer?.ok || !answer.text) return undefined
+    logRing.append('info', `memory: 注入 ${answer.count} 条项目记忆（${answer.chars} 字）到新会话的系统提示`, 'shell')
+    return answer.text
+  }
+
+  /**
+   * 发送前的本地检查：规则引擎 + 安全防护。
+   *
+   * 为什么判定放在桥里而不是页面上：规则与防护的存储都在桥这一侧，判断必须在数据所在的地方做，
+   * 否则「面板里看得见、真发出去时不起作用」就会再发生一次 —— 那正是这一轮要修的毛病。
+   *
+   * 为什么是「确认一次」而不是硬拦：写这段代码时我自己就被密钥规则误伤过（测试文件里一个假 key
+   * 让写文件被拒），所以对**用户自己敲的提示词**只做一次确认，不单方面拦截。误报的代价是把用户
+   * 锁在自己的工具外面，比漏报更难恢复。确认过就照发，并且这次放行会写进运行日志。
+   */
+  async function runPreflight({ text, cwd, confirmed }) {
+    const blockers = []
+    let rules = []
+    let appendText = ''
+
+    const rulesAnswer = await withFeature('rules', async (mod) => await mod.evaluateRules({ text, cwd }))
+    if (rulesAnswer?.ok && Array.isArray(rulesAnswer.hits)) {
+      rules = rulesAnswer.hits.map((hit) => ({
+        id: hit.id,
+        name: hit.name,
+        label: hit.label,
+        action: hit.action,
+      }))
+      for (const hit of rules) {
+        if (hit.action === 'block') blockers.push({ source: 'rule', name: hit.name, label: hit.label })
+      }
+      appendText = rulesAnswer.hits
+        .filter((hit) => hit.action === 'append' && hit.append)
+        .map((hit) => hit.append)
+        .join('\n')
+    }
+
+    const guardAnswer = await withFeature('defend', async (mod) =>
+      await mod.guard({ text, where: 'prompt', action: 'preflight' }),
+    )
+    for (const hit of Array.isArray(guardAnswer?.hits) ? guardAnswer.hits : []) {
+      if (hit.severity !== 'block') continue
+      blockers.push({
+        source: 'defend',
+        name: hit.ruleName ?? hit.rule,
+        label: hit.excerpt ?? '',
+        family: hit.familyLabel ?? hit.family ?? null,
+      })
+    }
+
+    if (blockers.length > 0 && !confirmed) {
+      return {
+        needsConfirm: true,
+        blockers,
+        rules,
+        error: `发送前检查命中 ${blockers.length} 项：${blockers.map((entry) => entry.name).join('、')}`,
+      }
+    }
+    if (blockers.length > 0) {
+      logRing.append('warn', `preflight: 用户确认后放行（${blockers.map((entry) => entry.name).join('、')}）`, 'shell')
+    }
+
+    return {
+      needsConfirm: false,
+      blockers,
+      rules,
+      appended: appendText,
+      text: appendText ? `${text}\n\n${appendText}` : text,
+    }
+  }
+
   const appVersion = options.appVersion ?? process.env.CCCN_APP_VERSION ?? '0.0.0'
   /**
    * The last check's result, and the ONLY place a download URL may come from.
@@ -585,6 +669,9 @@ export function createBridgeServer(options) {
           proxy: body.proxy || defaults.proxy || undefined,
           // Bundled skills are mounted for EVERY session; the user never has to opt in.
           skillsRoot: options.skillsRoot,
+          // 本工作区的项目记忆随会话注入（见 memoryAppendix：CLAUDE.memory.md 不会被 CLI 自动读，
+          // 因此导出只是给人看的，真正影响会话的是这个附录）。
+          systemPromptAppend: await memoryAppendix(body.cwd || process.cwd()),
         })
 
         // No separate pre-attach buffer is kept: ClaudeSession already appends every event
@@ -704,9 +791,30 @@ export function createBridgeServer(options) {
             sendJson(res, 409, { accepted: false, error: 'a turn is already running' })
             return
           }
-          const accepted = session.send(text)
+
+          const preflight = await runPreflight({
+            text,
+            cwd: session.options.cwd,
+            confirmed: body.confirm === true,
+          })
+          if (preflight.needsConfirm) {
+            // 409 with a body the page can act on: this is a decision for the user, not a failure.
+            sendJson(res, 409, {
+              accepted: false,
+              needsConfirm: true,
+              blockers: preflight.blockers,
+              error: preflight.error,
+            })
+            return
+          }
+
+          const accepted = session.send(preflight.text)
           sendJson(res, accepted ? 202 : 409, {
             accepted,
+            // What the local checks decided, so the page can show it: a label the user should read,
+            // and the exact text that was appended (silently rewriting a prompt is not acceptable).
+            rules: preflight.rules,
+            appended: preflight.appended || null,
             error: accepted ? undefined : 'session is not accepting input',
           })
           return

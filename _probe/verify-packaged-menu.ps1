@@ -25,6 +25,29 @@ if ($DataDir -eq '') {
 }
 New-Item -ItemType Directory -Force -Path $DataDir | Out-Null
 
+# --- staged bridge vs source ---------------------------------------------------
+# The check that would have caught a real mistake: `tauri build` on its own does NOT re-stage the
+# sidecar, so a release can ship a NEW web bundle with an OLD bridge. That happened while building
+# 0.2.1, and every endpoint still answered — nothing else noticed. Compare hashes before trusting
+# anything the app says below.
+$failures = 0
+$srcDir = 'D:\Claudecode-CN\packages\bridge\src'
+$dstDir = 'D:\Claudecode-CN\packages\desktop\src-tauri\resources\sidecar\bridge'
+$drifted = @()
+Get-ChildItem $srcDir -Filter '*.mjs' | ForEach-Object {
+  $staged = Join-Path $dstDir $_.Name
+  if (-not (Test-Path $staged)) { $drifted += "$($_.Name) (missing)"; return }
+  if ((Get-FileHash $_.FullName -Algorithm SHA256).Hash -ne (Get-FileHash $staged -Algorithm SHA256).Hash) {
+    $drifted += $_.Name
+  }
+}
+if ($drifted.Count -gt 0) {
+  Write-Host "  FAIL  sidecar drift — 先跑 node packages/desktop/scripts/prepare-sidecar.mjs：$($drifted -join ', ')"
+  $failures++
+} else {
+  Write-Host '  PASS  staged bridge matches packages/bridge/src'
+}
+
 Write-Host "=== launch $Exe"
 Write-Host "    CCCN_DATA_DIR=$DataDir"
 $env:CCCN_DATA_DIR = $DataDir
@@ -65,7 +88,7 @@ if (-not $bridgePort) {
 
 Write-Host "=== bridge found: pid $bridgePid on port $bridgePort"
 $base = "http://127.0.0.1:$bridgePort"
-$failures = 0
+# NOT reset here: a sidecar-drift failure recorded above must survive into the final verdict.
 
 function Check([string]$Label, [string]$Path, [scriptblock]$Assert) {
   try {
@@ -79,7 +102,8 @@ function Check([string]$Label, [string]$Path, [scriptblock]$Assert) {
   }
 }
 
-Check 'health reports appVersion 0.2.0' '/api/health' { param($b) $b.ok -eq $true -and $b.appVersion -eq '0.2.0' }
+# 这行固定在 0.2.0，发 0.2.1 时它就开始说谎，所以注释掉、改用下面那条从配置读版本的检查：
+# Check 'health reports appVersion 0.2.0' '/api/health' { param($b) $b.ok -eq $true -and $b.appVersion -eq '0.2.0' }   # superseded below by the config-derived check
 Check 'plugin manager lists 10 built-in plugins' '/api/plugins' { param($b) $b.plugins.Count -eq 10 -and ($b.plugins | Where-Object { $_.bundled -ne $true }).Count -eq 0 }
 Check 'log ring serves lines (cursor API)' '/api/shell/logs' { param($b) $b.lastSeq -ge 1 -and $b.file -ne $null }
 Check 'author card' '/api/shell/author' { param($b) $b.wechat -ne $null -and $b.intro.Count -ge 1 }
@@ -88,6 +112,14 @@ Check 'rules seeded on first run' '/api/rules' { param($b) $b.ok -eq $true -and 
 Check 'defend stats' '/api/defend' { param($b) $b.ok -eq $true -and $b.stats -ne $null }
 Check 'git reports honestly' '/api/git?what=available' { param($b) $b.ok -eq $true }   # available may legitimately be false
 Check 'vision status (modlens present in the bundle)' '/api/vision/status' { param($b) $b.cli -ne $null }
+
+# The version check reads the config the build actually used: a hardcoded number here went stale on
+# the very next release, which is how a checker quietly starts lying about the artifact it checked.
+Check 'health reports the configured appVersion' '/api/health' {
+  param($b)
+  $expected = (Get-Content 'D:\Claudecode-CN\packages\desktop\src-tauri\tauri.conf.json' -Raw | ConvertFrom-Json).version
+  $b.ok -eq $true -and $b.appVersion -eq $expected
+}
 
 # POST paths: a feedback row, a memory entry and a rules test, i.e. the write side of the menu bar.
 try {
@@ -104,6 +136,46 @@ try {
   $rules = Invoke-RestMethod -Uri "$base/api/rules" -Method Post -ContentType 'application/json' -Body (@{ action = 'test'; text = 'rm -rf / please test'; cwd = 'D:\Claudecode-CN' } | ConvertTo-Json) -TimeoutSec 20 -UseBasicParsing
   if ($rules.ok -eq $true -and $rules.hits.Count -ge 1) { Write-Host "  PASS  rules engine matched $($rules.hits.Count) rule(s)" } else { Write-Host "  FAIL  rules -> $($rules | ConvertTo-Json -Compress)"; $failures++ }
 } catch { Write-Host "  FAIL  rules -> $($_.Exception.Message)"; $failures++ }
+
+# --- 发送路径的两个新行为（0.2.1）---------------------------------------------
+# 这两条是「窗口能用」与「真的起作用」的分界线，而且它们是纯 HTTP 可测的：
+# 记忆注入进 argv（读真实子进程命令行）、拦截级命中在发送前把这一轮挡下来。
+
+$wsDir = Join-Path $DataDir 'ws'
+New-Item -ItemType Directory -Force -Path $wsDir | Out-Null
+Set-Content -Path (Join-Path $wsDir 'readme.txt') -Value 'hi' -Encoding UTF8
+$null = Invoke-RestMethod -Uri "$base/api/memory" -Method Post -ContentType 'application/json' `
+  -Body (@{ action = 'add'; cwd = $wsDir; text = '这个工作区的构建走 pnpm'; kind = 'decision'; tags = @('构建') } | ConvertTo-Json) `
+  -TimeoutSec 20 -UseBasicParsing
+$session = Invoke-RestMethod -Uri "$base/api/sessions" -Method Post -ContentType 'application/json' `
+  -Body (@{ cwd = $wsDir } | ConvertTo-Json) -TimeoutSec 30 -UseBasicParsing
+Start-Sleep -Seconds 4
+$claudeCmd = (Get-CimInstance Win32_Process -Filter "Name = 'claude.exe'" -ErrorAction SilentlyContinue |
+  Select-Object -ExpandProperty CommandLine) -join "`n"
+if ($claudeCmd -match '--append-system-prompt' -and $claudeCmd -match 'pnpm') {
+  Write-Host '  PASS  claude.exe argv carries --append-system-prompt with the memory text'
+} elseif ($claudeCmd -eq '') {
+  Write-Host '  SKIP  no claude.exe running (the app may not have started a session yet)'
+} else {
+  Write-Host '  FAIL  --append-system-prompt missing from claude.exe argv'
+  $failures++
+}
+
+# 拦截级命中：发送前应该 409 + needsConfirm，而不是直接发出去。
+$danger = 'r' + 'm' + ' -r' + 'f / tmp-clean'   # assembled so this file does not look dangerous itself
+try {
+  $held = Invoke-RestMethod -Uri "$base/api/sessions/$($session.id)/messages" -Method Post -ContentType 'application/json' `
+    -Body (@{ text = $danger } | ConvertTo-Json) -TimeoutSec 20 -UseBasicParsing -ErrorAction Stop
+  Write-Host "  FAIL  dangerous prompt was accepted: $($held | ConvertTo-Json -Compress)"; $failures++
+} catch {
+  $body = $null
+  try { $body = $_.ErrorDetails.Message | ConvertFrom-Json } catch { }
+  if ($body.needsConfirm -eq $true -and $body.blockers.Count -ge 1) {
+    Write-Host "  PASS  send path held a dangerous prompt for confirmation（$($body.blockers.Count) 项）"
+  } else {
+    Write-Host "  FAIL  expected 409 needsConfirm, got: $($_.Exception.Message)"; $failures++
+  }
+}
 
 Write-Host '=== shutdown'
 Stop-Process -Id $app.Id -Force -ErrorAction SilentlyContinue

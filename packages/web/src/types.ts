@@ -359,6 +359,44 @@ export interface ProviderBalance {
   url?: string
 }
 
+/**
+ * One item the send-path checks stopped on: a rule's `block` action, or a 安全防护 hit at `block`
+ * severity. `source` is carried so the card can say WHICH check objected — "a rule you wrote" and
+ * "the secret scanner" call for different reactions from the user.
+ */
+export interface SendBlocker {
+  source: 'rule' | 'defend'
+  name: string
+  label?: string
+  family?: string | null
+}
+
+/** A rule that fired on this turn, whatever its action. */
+export interface SendRuleHit {
+  id: string
+  name: string
+  label: string
+  action: string
+}
+
+/**
+ * The verdict for one send.
+ *
+ * `sent: false` covers two situations that must not be shown the same way: `needsConfirm` is the
+ * local checks waiting for a human decision (the text is intact and can be re-sent as-is), while a
+ * plain `error` is a real failure such as a turn already running. And `appended` is reported rather
+ * than assumed, because the bridge may have added text to the prompt and the user is entitled to see
+ * exactly what went out.
+ */
+export interface SendVerdict {
+  sent: boolean
+  needsConfirm?: boolean
+  blockers?: SendBlocker[]
+  rules?: SendRuleHit[]
+  appended?: string | null
+  error?: string
+}
+
 export interface Health {
   ok: boolean
   /** The bridge PROTOCOL version, so a stale page can detect a mismatched bridge. */

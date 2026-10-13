@@ -334,9 +334,13 @@ watch(
         :disabled="!workspace || busy"
         @click="exportMarkdown"
       >
-        导出为 CLAUDE.md
+        导出为 CLAUDE.memory.md
       </button>
       <button class="btnGhost" type="button" :disabled="!workspace || loading" @click="load">刷新</button>
+      <span class="mp__spacer" />
+      <span class="mp__counter mp__counter--warn">
+        新建会话时自动注入（上限 4000 字，最近的优先）；导出的是给人看的 Markdown，CLI 不会自动读它
+      </span>
       <span class="mp__spacer" />
       <span v-if="exportPath" class="mp__path" :title="exportPath">已写入 {{ exportPath }}</span>
       <span v-else-if="storePath" class="mp__path" :title="storePath">存放于 {{ storePath }}</span>
@@ -451,6 +455,12 @@ watch(
 
 .mp__counter {
   color: var(--dsw-alias-label-caption);
+}
+
+/* The one line in this window that is a caveat rather than a status: it says what the export does
+   NOT do, which the old copy got wrong by naming a file the CLI never reads. */
+.mp__counter--warn {
+  color: var(--dsw-alias-state-warn-secondary);
 }
 
 .mp__spacer {

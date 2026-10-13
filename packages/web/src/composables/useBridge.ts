@@ -11,6 +11,7 @@ import type {
   Catalog,
   Discovery,
   Health,
+  SendVerdict,
   SessionView,
   TranscriptListing,
   UpdateCheck,
@@ -363,12 +364,38 @@ export function useBridge() {
     void refreshCatalogWhenReady(sessionId)
   }
 
-  async function send(text: string) {
+  /**
+   * Send one turn of user input, and bring the local checks' verdict back with it.
+   *
+   * WHY THIS DOES NOT GO THROUGH `api()`: the send path has a NORMAL non-2xx — when 规则引擎 or
+   * 安全防护 wants a confirmation first, the bridge answers 409 — and `api()` turns every non-2xx
+   * into a thrown string, which would leave the caller with a concatenated message and no blockers
+   * and no `appended`. That verdict is data, not a failure, so it is returned rather than thrown.
+   */
+  async function send(text: string, options: { confirm?: boolean } = {}): Promise<SendVerdict> {
     if (!activeSessionId.value) throw new Error('no active session')
-    await api(`/api/sessions/${activeSessionId.value}/messages`, {
+    const response = await fetch(`${baseUrl.value}/api/sessions/${activeSessionId.value}/messages`, {
       method: 'POST',
-      body: JSON.stringify({ text }),
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ text, confirm: options.confirm === true }),
     })
+    const payload = (await response.json().catch(() => null)) as
+      | (SendVerdict & { accepted?: boolean })
+      | null
+
+    if (payload?.needsConfirm) {
+      return {
+        sent: false,
+        needsConfirm: true,
+        blockers: payload.blockers ?? [],
+        rules: payload.rules ?? [],
+        error: payload.error,
+      }
+    }
+    if (!response.ok || payload?.accepted !== true) {
+      return { sent: false, error: payload?.error ?? `${response.status} ${response.statusText}` }
+    }
+    return { sent: true, rules: payload.rules ?? [], appended: payload.appended ?? null }
   }
 
   /**

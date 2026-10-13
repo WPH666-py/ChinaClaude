@@ -404,3 +404,64 @@ export function exportMemory({ cwd } = {}) {
   if (!written.ok) return written
   return { ok: true, markdown: merged, path: file }
 }
+
+/** Default budget for the injected appendix. See `memoryForPrompt` for why there is one at all. */
+const MAX_PROMPT_CHARS = 4000
+
+/**
+ * The workspace's memory as a system-prompt appendix, for the CLI's `--append-system-prompt`.
+ *
+ * WHY INJECTION RATHER THAN THE MARKDOWN EXPORT, which already exists: `CLAUDE.memory.md` is not a
+ * file the CLI reads — it auto-loads `CLAUDE.md` and nothing else — so an export that no prompt ever
+ * references changes nothing about a session. Reviewing that claim is what turned this function from
+ * "nice to have" into the actual delivery path: the reliable one is the hook the CLI already offers,
+ * handed to the child process at spawn time.
+ *
+ * WHY A CHARACTER BUDGET RATHER THAN EVERYTHING: this text rides on EVERY request of the session.
+ * The store is user-written and unbounded, so without a cap a long-lived project would quietly spend
+ * part of every prompt on old notes. The newest entries win — the note that matters is nearly always
+ * the recent one — and the number left out is stated in the text itself, so a truncated injection
+ * never reads as complete.
+ *
+ * @returns {{ok:true, text:string, count:number, dropped:number, chars:number}|{ok:false, error:string}}
+ */
+export function memoryForPrompt({ cwd, limit = MAX_PROMPT_CHARS } = {}) {
+  const listed = listMemory({ cwd })
+  if (!listed.ok) return listed
+
+  const budget = Number.isFinite(limit) && limit > 0 ? limit : MAX_PROMPT_CHARS
+  const entries = listed.entries
+  if (entries.length === 0) return { ok: true, text: '', count: 0, dropped: 0, chars: 0 }
+
+  const head = [
+    '## 项目记忆（ChinaClaude 自动注入）',
+    `本工作区此前记录下来的内容，共 ${entries.length} 条。与当前任务相关时请直接采用，不必再问一遍：`,
+    '',
+  ]
+
+  const lines = []
+  let used = head.join('\n').length
+  for (const entry of entries) {
+    const kind = KIND_TITLE[entry.kind] ?? entry.kind
+    const tags = entry.tags.length > 0 ? ` ${entry.tags.map((tag) => `\`${tag}\``).join(' ')}` : ''
+    // One line per note: a note that wraps to ten lines costs ten lines of every prompt, and the
+    // point of the appendix is to be skimmable by the model, not readable as prose.
+    const body = escapeMarkers(String(entry.text ?? '').replace(/\s*\n\s*/g, ' / ')).trim()
+    const line = `- [${kind}] ${body}${tags}`
+    if (used + line.length + 1 > budget) break
+    lines.push(line)
+    used += line.length + 1
+  }
+
+  // Nothing fit: writing the heading alone would inject a promise with no content, which is worse
+  // than injecting nothing — the caller then leaves the CLI's prompt untouched.
+  if (lines.length === 0) return { ok: true, text: '', count: 0, dropped: entries.length, chars: 0 }
+
+  const dropped = entries.length - lines.length
+  const tail = dropped > 0
+    ? ['', `（另有 ${dropped} 条未注入：本条上限 ${budget} 字，可在「插件管理 → 项目记忆」查看全部）`]
+    : []
+
+  const text = [...head, ...lines, ...tail].join('\n')
+  return { ok: true, text, count: lines.length, dropped, chars: text.length }
+}

@@ -306,7 +306,8 @@ onMounted(() => void load())
 
     <p class="rp__lead">
       把「遇到这种情况就这样做」写成规则。命中后可以只标注、把一句话补进这一轮提示词，或者拦下来不让发 ——
-      拦截只做上报，最终发不发由发送方决定。
+      这三件事都发生在**真正的发送路径上**（判定在桥里做，和这个窗口用的是同一份规则）：标注会显示在输入框上方，
+      追加会把原话连同补的那句一起发出去并告诉你补了什么，拦截会先把这一轮挡下来问你一次，确认后照发（并记入运行日志）。
     </p>
 
     <div class="tabs rp__tabs">
@@ -485,7 +486,7 @@ onMounted(() => void load())
           <p v-if="hit.label" class="rp__label">{{ hit.label }}</p>
           <p v-if="hit.append" class="rp__appendLine">追加：{{ hit.append }}</p>
           <p v-if="hit.action === 'block'" class="rp__blockLine">
-            这是拦截规则：调用方应据此拒绝这次发送，或明确提示用户后再发。
+            这是拦截规则：真发送时这一轮会先被挡在发送前并请你确认一次；确认后原样发出，并记入运行日志。
           </p>
         </li>
       </ul>

@@ -17,8 +17,9 @@ import SettingsPanel from './components/SettingsPanel.vue'
 import SplashScreen from './components/SplashScreen.vue'
 import UpdateDialog from './components/UpdateDialog.vue'
 import TopMenu from './components/TopMenu.vue'
+import SendGuard from './components/SendGuard.vue'
 import { useSettings, parseModelRef } from './composables/useSettings'
-import type { ProviderBalance, TranscriptSummary, UpdateCheck } from './types'
+import type { ProviderBalance, SendBlocker, SendRuleHit, TranscriptSummary, UpdateCheck } from './types'
 import { priceEvents, isPeak } from '../../bridge/src/pricing.mjs'
 
 const bridge = useBridge()
@@ -109,6 +110,90 @@ async function checkForUpdatesFromMenu() {
     updateOpen.value = true
   }
   return result
+}
+
+/**
+ * Send path with the local checks' verdict in front of the user.
+ *
+ * WHY THIS REPLACED A ONE-LINE `bridge.send(text)`: 规则引擎 and 安全防护 judge every outgoing turn
+ * inside the bridge, and a verdict nobody renders is indistinguishable from a check that never ran.
+ * Three outcomes, three deliberate behaviours:
+ *   - held for confirmation → keep the text in `guardPending` so 「仍然发送」 re-sends exactly what
+ *     was typed, and 「取消」 hands it back to the composer instead of throwing it away;
+ *   - sent with rule hits → a dismissible note saying which rules fired and what was appended;
+ *   - refused (a turn is already running, the session is closed) → the same bar, in red. It used to
+ *     be an unhandled rejection, i.e. invisible.
+ */
+const guardPending = ref<{ text: string; blockers: SendBlocker[] } | null>(null)
+const guardNotice = ref<{ rules: SendRuleHit[]; appended?: string | null } | null>(null)
+const guardError = ref<string | null>(null)
+const guardBusy = ref(false)
+/** Draft handed back to the composer after a cancel; the nonce is what makes a repeat cancel work. */
+const composerDraft = ref<{ text: string; nonce: number } | null>(null)
+let noticeTimer: number | null = null
+
+function showNotice(notice: { rules: SendRuleHit[]; appended?: string | null } | null) {
+  guardNotice.value = notice
+  if (noticeTimer !== null) window.clearTimeout(noticeTimer)
+  // Self-clearing: this is information about a turn that has already gone out, so it must not sit
+  // above the composer forever competing with the next thing the user wants to say.
+  noticeTimer = window.setTimeout(() => {
+    guardNotice.value = null
+  }, 12000)
+}
+
+async function onSend(text: string) {
+  guardError.value = null
+  guardBusy.value = true
+  try {
+    const verdict = await bridge.send(text)
+    if (verdict.needsConfirm) {
+      guardPending.value = { text, blockers: verdict.blockers ?? [] }
+      return
+    }
+    if (!verdict.sent) {
+      guardError.value = verdict.error ?? '发送失败'
+      return
+    }
+    guardPending.value = null
+    const rules = verdict.rules ?? []
+    if (rules.length > 0 || verdict.appended) showNotice({ rules, appended: verdict.appended ?? null })
+    else guardNotice.value = null
+  } catch (problem) {
+    guardError.value = problem instanceof Error ? problem.message : String(problem)
+  } finally {
+    guardBusy.value = false
+  }
+}
+
+async function confirmSend() {
+  const pending = guardPending.value
+  if (!pending) return
+  guardBusy.value = true
+  guardError.value = null
+  try {
+    const verdict = await bridge.send(pending.text, { confirm: true })
+    if (!verdict.sent) {
+      guardError.value = verdict.error ?? '发送失败'
+      return
+    }
+    guardPending.value = null
+    const rules = verdict.rules ?? []
+    if (rules.length > 0 || verdict.appended) showNotice({ rules, appended: verdict.appended ?? null })
+  } catch (problem) {
+    guardError.value = problem instanceof Error ? problem.message : String(problem)
+  } finally {
+    guardBusy.value = false
+  }
+}
+
+function cancelSend() {
+  const pending = guardPending.value
+  guardPending.value = null
+  guardError.value = null
+  // Hand the text back rather than dropping it: a check that eats what you typed is worse than no
+  // check at all, and the user would have to reconstruct it from memory.
+  if (pending) composerDraft.value = { text: pending.text, nonce: Date.now() }
 }
 
 /**
@@ -868,18 +953,29 @@ function newSession() {
           @answer="onDialogAnswer"
         />
 
+        <SendGuard
+          :pending="guardPending"
+          :notice="guardNotice"
+          :error="guardError"
+          :busy="guardBusy"
+          @confirm="confirmSend"
+          @cancel="cancelSend"
+          @dismiss="guardNotice = null; guardError = null"
+        />
+
         <Composer
           :disabled="!bridge.activeSessionId.value"
           :busy="bridge.isBusy.value"
           :awaiting-approval="bridge.pendingPermissions.value.length > 0"
           :awaiting-dialog="bridge.pendingDialogs.value.length > 0"
+          :draft="composerDraft"
           :model="bridge.activeSession.value?.model ?? ''"
           :permission-mode="bridge.activeSession.value?.permissionMode ?? ''"
           :effort="sessionEffort"
           :catalog-models="bridge.catalog.value?.models ?? []"
           :resolved-model="bridge.catalog.value?.resolvedModel ?? null"
           :has-credentials="bridge.activeSession.value?.hasCredential === true"
-          @send="(text: string) => bridge.send(text)"
+          @send="onSend"
           @stop="bridge.stopSession()"
           @change-mode="onChangeMode"
           @change-model="onChangeModel"

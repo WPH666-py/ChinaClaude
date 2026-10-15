@@ -271,6 +271,81 @@ textarea {
   overflow: hidden;
 }
 
+/* Only the narrow-screen drawer uses a scrim; in the two-column layout there is nothing to dim. */
+.frame__scrim {
+  display: none;
+}
+
+/*
+ * Phone widths (and the WeChat in-app browser, which reports the same CSS pixel range).
+ *
+ * The sidebar was a fixed 264px column, which on a ~390px screen leaves the conversation unusable, so
+ * below 720px it stops being a column and becomes an overlay drawer: the frame collapses to a single
+ * column and the sidebar floats above the content, parked off-canvas until the top bar's 展开侧栏
+ * button opens it. `sidebarCollapsed` in App.vue is seeded from this same 720px query, so the drawer
+ * starts closed rather than covering the first screen the user sees.
+ *
+ * Chosen as a width breakpoint rather than a user-agent test because the page is served to both the
+ * Tauri webview and the phone by the same bundle; there is no build-time way to tell them apart.
+ */
+@media (max-width: 720px) {
+  .frame,
+  .frame--rail {
+    grid-template-columns: minmax(0, 1fr);
+    position: relative;
+  }
+
+  .frame:not(.frame--rail) .frame__scrim {
+    display: block;
+    position: absolute;
+    inset: 0;
+    z-index: 50;
+    background: rgb(0 0 0 / 45%);
+  }
+
+  .sidebarCol {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    width: min(300px, 86vw);
+    z-index: 60;
+    transform: translateX(-101%);
+    transition: transform 180ms ease;
+  }
+
+  .frame:not(.frame--rail) .sidebarCol {
+    transform: none;
+    box-shadow: 0 12px 40px rgb(0 0 0 / 45%);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sidebarCol {
+    transition: none;
+  }
+}
+
+/*
+ * Tablet tier.
+ *
+ * Between the phone drawer (720px) and the full desktop layout (1180px) a 264px rail plus the chat
+ * column technically fits, but leaves so little room for the conversation that the chrome looks like
+ * the point. Narrowing the rail and tightening the top bar's gutters keeps the messages the focus
+ * while the sidebar stays visible — a tablet is wide enough not to need the drawer.
+ */
+@media (min-width: 721px) and (max-width: 1024px) {
+  :root {
+    --dsh-sidebar-width: 216px;
+    --dsh-sidebar-inline-padding: 8px;
+  }
+
+  .topBar {
+    gap: 8px;
+    padding: 0 12px;
+  }
+}
+
 /* ================================================================ sidebar == */
 
 .sidebar {
@@ -746,6 +821,9 @@ textarea {
 /* Segmented tabs (对话 / 轨迹). */
 .tabs {
   display: inline-flex;
+  /* `flex: none` keeps the control at its natural width: without it a narrow top bar shrank the
+     tabs until "对话" wrapped one character per line and read vertically. */
+  flex: none;
   align-items: center;
   gap: 2px;
   padding: 2px;
@@ -759,6 +837,8 @@ textarea {
   color: var(--dsw-alias-label-secondary);
   font-size: 12.5px;
   font-weight: 500;
+  /* A two-character label must never break mid-word; it shrinks the bar around it instead. */
+  white-space: nowrap;
 }
 
 .tab:hover {
@@ -777,6 +857,8 @@ textarea {
 /* Model / permission chips. */
 .chip {
   display: inline-flex;
+  /* Chips keep their width too; the truncating title is what gives way on a narrow bar. */
+  flex: none;
   align-items: center;
   gap: 5px;
   height: 26px;

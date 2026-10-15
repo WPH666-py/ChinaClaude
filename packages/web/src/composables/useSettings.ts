@@ -14,7 +14,7 @@
  * an explicit opt-in per key (`persistKey`) and surfaced in the UI. Keys are never sent
  * anywhere except the local bridge, which forwards them to the CLI child process.
  */
-import { ref, watch } from 'vue'
+import { nextTick, ref, watch } from 'vue'
 
 /**
  * Storage key version.
@@ -26,6 +26,32 @@ import { ref, watch } from 'vue'
  * showing Anthropic model names with no way to understand why.
  */
 const STORAGE_KEY = 'cccn.settings.v3'
+
+/**
+ * Generate a unique id for a settings record.
+ *
+ * `crypto.randomUUID` is the obvious choice, and it is what this used to call — but it is only
+ * defined in a SECURE CONTEXT (HTTPS or localhost). A phone reaches the bridge over plain HTTP at a
+ * LAN address such as `http://192.168.111.73:43130`, which is NOT a secure context, so
+ * `crypto.randomUUID` is `undefined` there and every save threw a `TypeError` that the form
+ * swallowed — the reported "手机上模型添加了没法保存".
+ *
+ * `crypto.getRandomValues` carries no such restriction, so a v4-shaped id is built from it directly;
+ * the `Math.random` arm is a last resort for an environment with no `crypto` at all. Ids only need
+ * to be unique within one settings blob, so a weaker source is still fit for purpose.
+ */
+function newId(): string {
+  const cryptoObj = globalThis.crypto
+  if (typeof cryptoObj?.randomUUID === 'function') return cryptoObj.randomUUID()
+  if (typeof cryptoObj?.getRandomValues === 'function') {
+    const bytes = cryptoObj.getRandomValues(new Uint8Array(16))
+    bytes[6] = (bytes[6] & 0x0f) | 0x40 // version 4
+    bytes[8] = (bytes[8] & 0x3f) | 0x80 // variant 10
+    const hex = Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('')
+    return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`
+  }
+  return `id-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`
+}
 
 /**
  * Permission presets, with the wording taken from Harness-CN and the `mode` values mapped to
@@ -362,7 +388,7 @@ function splitOneModelPerCard(providers: Provider[]): Provider[] {
     provider.models.forEach((model, index) => {
       out.push({
         ...provider,
-        id: index === 0 ? provider.id : crypto.randomUUID(),
+        id: index === 0 ? provider.id : newId(),
         // Only the original keeps "default": the copies are new records, not new defaults.
         isDefault: index === 0 ? provider.isDefault : false,
         models: [model],
@@ -421,7 +447,7 @@ function load(): Settings {
       priceTables: priceTables
         .filter((table) => table && typeof table === 'object')
         .map((table) => ({
-          id: typeof table.id === 'string' && table.id ? table.id : crypto.randomUUID(),
+          id: typeof table.id === 'string' && table.id ? table.id : newId(),
           match: typeof table.match === 'string' ? table.match : '',
           label: typeof table.label === 'string' ? table.label : '',
           cacheMiss: Number(table.cacheMiss) || 0,
@@ -437,9 +463,20 @@ function load(): Settings {
 
 const settings = ref<Settings>(load())
 
+/**
+ * Guards the persistence watcher below.
+ *
+ * Set while `hydrateFromBridge` adopts a server-provided list: that list is the DESKTOP's, so writing
+ * it into this device's localStorage would (a) bloat storage with a copy the phone never chose and (b)
+ * strip the keys — the sanitising watcher blanks any key without `persistKey`, and a hydrated key has
+ * not been through the UI opt-in. Cleared on the next tick, once the watcher has had its one flush.
+ */
+let skipPersist = false
+
 watch(
   settings,
   (value) => {
+    if (skipPersist) return
     try {
       // Keys are stripped unless the user opted into persisting them, so a stolen settings blob
       // does not hand over every credential.
@@ -457,6 +494,36 @@ watch(
   },
   { deep: true },
 )
+
+/**
+ * Adopt the endpoint + model list the desktop published to the bridge.
+ *
+ * The desktop webview and a phone browser are separate origins, so they do not share localStorage and
+ * the phone saw "您还未绑定模型" on a machine that was in fact fully configured. This closes that gap.
+ *
+ * NO CREDENTIAL TRAVELS WITH IT: the bridge blanks `apiKey` before sending, so what arrives is the
+ * endpoint and model names and nothing secret. `persistKey` is nevertheless forced on, because the key
+ * this device's user then types has to survive the sanitising watcher below — which blanks any key whose
+ * provider did not opt in. Returns whether anything was adopted, so the caller can skip work when there
+ * was nothing to take.
+ *
+ * Fills ONLY when this device has nothing of its own — a phone that already bound a model keeps it, and
+ * the desktop (which owns a list) never takes this path.
+ */
+export function hydrateFromBridge(providers: Provider[]): boolean {
+  if (!Array.isArray(providers) || providers.length === 0) return false
+  if (settings.value.providers.length > 0) return false
+  skipPersist = true
+  settings.value = {
+    ...settings.value,
+    providers: providers.map((provider) => ({ ...provider, persistKey: true })),
+  }
+  // The deep watcher runs on the next scheduler flush; release the guard only after it has.
+  void nextTick(() => {
+    skipPersist = false
+  })
+  return true
+}
 
 /** One selectable model in the picker. */
 export interface ModelOption {
@@ -556,7 +623,7 @@ export function useSettings() {
   }
 
   function addProvider(provider: Omit<Provider, 'id'>) {
-    const created: Provider = { ...provider, id: crypto.randomUUID() }
+    const created: Provider = { ...provider, id: newId() }
     // The first provider becomes the default so a fresh setup needs no extra step.
     if (settings.value.providers.length === 0) created.isDefault = true
     settings.value.providers.push(created)
@@ -583,7 +650,7 @@ export function useSettings() {
   // --- price tables ---------------------------------------------------------
 
   function addPriceTable(table: Omit<PriceTable, 'id'>) {
-    const created: PriceTable = { ...table, id: crypto.randomUUID() }
+    const created: PriceTable = { ...table, id: newId() }
     settings.value.priceTables.push(created)
     return created
   }
@@ -636,7 +703,7 @@ export function useSettings() {
     const previous = provider.models[0]
     provider.models = [
       {
-        id: previous?.id ?? crypto.randomUUID(),
+        id: previous?.id ?? newId(),
         model,
         label: label || previous?.label || '',
         effort: effort !== undefined ? effort || undefined : previous?.effort,
@@ -669,6 +736,7 @@ export function useSettings() {
     removePriceTable,
     seedPriceTable,
     setProviderModel,
+    hydrateFromBridge,
     reset,
   }
 }

@@ -39,6 +39,14 @@ use claude_code_cn_lib::MAIN_WINDOW_LABEL;
 const READY_PREFIX: &str = "CCCN_READY ";
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(90);
 
+/**
+ * The port the bridge listens on.
+ *
+ * Stable rather than OS-assigned so the phone URL survives a restart. Matches the fallback the web
+ * client already assumes when no shell injected a URL.
+ */
+const BRIDGE_PORT: &str = "43130";
+
 /// Windows `CREATE_NO_WINDOW`.
 ///
 /// This shell is a GUI-subsystem process, and the sidecar is `node.exe` — a CONSOLE-subsystem
@@ -153,8 +161,12 @@ fn spawn_bridge(dir: &PathBuf) -> Result<(Child, String), String> {
     let mut command = Command::new(&node);
     command
         .arg(&entry)
+        // A FIXED PORT, not `--port 0`. Phone access hands the user a URL they will bookmark, and a
+        // port that changes every launch would make that bookmark work only until the next restart.
+        // The bridge falls back to an OS-assigned port if this one is taken, so a busy port degrades
+        // to a working app rather than a failed launch (see `onListenError` in cli.mjs).
         .arg("--port")
-        .arg("0")
+        .arg(BRIDGE_PORT)
         .current_dir(dir)
         // The packaged runtime must not be treated as a sidecar by the bridge itself, and the
         // bridge must not have to GUESS where its own resources live: a development checkout

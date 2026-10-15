@@ -15,6 +15,7 @@ import type { Bridge } from '../composables/useBridge'
 import BundledPanel from './BundledPanel.vue'
 import ImportPanel from './ImportPanel.vue'
 import AuditPanel from './AuditPanel.vue'
+import RemotePanel from './RemotePanel.vue'
 
 const props = defineProps<{
   catalog: Catalog | null
@@ -65,7 +66,7 @@ const { DEFAULT_BASE_URL } = store
  * outcome: a silent no-op reads as a broken app rather than as "no session is selected".
  */
 const hasActiveSession = computed(() => Boolean(props.sessionPermissionMode !== null && props.sessionPermissionMode !== undefined))
-const section = ref<'general' | 'permission' | 'models' | 'pricing' | 'bundled' | 'import' | 'audit' | 'about'>('general')
+const section = ref<'general' | 'permission' | 'models' | 'pricing' | 'bundled' | 'import' | 'audit' | 'remote' | 'about'>('general')
 
 /**
  * Which configured provider a rate row appears to describe, for a "prefilled from X" hint.
@@ -114,6 +115,7 @@ if (
   requestedSection === 'bundled' ||
   requestedSection === 'import' ||
   requestedSection === 'audit' ||
+  requestedSection === 'remote' ||
   requestedSection === 'about'
 ) {
   section.value = requestedSection
@@ -366,6 +368,9 @@ function removeSaved(providerId: string) {
           </button>
           <button class="st__railItem" :class="{ 'st__railItem--on': section === 'audit' }" type="button" @click="section = 'audit'">
             安全审计
+          </button>
+          <button class="st__railItem" :class="{ 'st__railItem--on': section === 'remote' }" type="button" @click="section = 'remote'">
+            手机访问
           </button>
           <button class="st__railItem" :class="{ 'st__railItem--on': section === 'about' }" type="button" @click="section = 'about'">
             关于
@@ -766,6 +771,9 @@ function removeSaved(providerId: string) {
             :suggested-path="auditSuggestedPath ?? null"
           />
 
+          <!-- phone access over the LAN -->
+          <RemotePanel v-else-if="section === 'remote'" :bridge="bridge" />
+
           <!-- about -->
           <template v-else>
             <h3 class="st__h">关于</h3>
@@ -924,6 +932,46 @@ function removeSaved(providerId: string) {
   min-width: 0;
   padding: 16px 20px 24px;
   overflow-y: auto;
+}
+
+/*
+ * Phone widths: the panel takes the whole screen and its section rail becomes a horizontal strip.
+ *
+ * The rail is a fixed 148px column, which on a ~390px screen would leave barely 180px for the body —
+ * every field would wrap to a column of single words. Stacking the rail above the body keeps the
+ * controls full width, and scrolling the strip sideways keeps every section reachable.
+ */
+@media (max-width: 720px) {
+  .st {
+    padding: 0;
+  }
+
+  .st__panel {
+    max-width: none;
+    max-height: none;
+    height: 100%;
+    border: none;
+    border-radius: 0;
+  }
+
+  .st__body {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto minmax(0, 1fr);
+  }
+
+  .st__rail {
+    flex-direction: row;
+    gap: 6px;
+    padding: 8px 10px;
+    border-right: none;
+    border-bottom: 0.5px solid var(--dsw-alias-border-l1);
+    overflow-x: auto;
+    white-space: nowrap;
+  }
+
+  .st__railItem {
+    flex: none;
+  }
 }
 
 

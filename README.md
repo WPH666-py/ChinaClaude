@@ -912,11 +912,13 @@ Claude Code 从 `<root>/.claude/skills/<name>/SKILL.md` 加载技能，也能加
 
 ### 「内置」到底是什么意思
 
-被要求内置的是十个 DSH 插件。它们**都不能在本客户端里直接运行** —— 本应用跑的是 `claude.exe`，
+被要求内置的是十二个 DSH 插件。它们**都不能在本客户端里直接运行** —— 本应用跑的是 `claude.exe`，
 没有 Cordis/DSH 运行时。所以逐个给出的是**能力**，而不是把包塞进 node_modules：
 
 | 上游插件 | 本版怎么内置 | 可核对入口 |
 | --- | --- | --- |
+| `dsh-web-mobile` | 自建「手机访问」：桥托管与桌面同一套界面，配对码换设备令牌，局域网监听**默认关闭** | `bridge/remote.mjs` · `/api/remote` |
+| `dsh-wechat` | 自建「微信通知」：企业微信群机器人 webhook 出站推送，地址只存本机、界面只回显掩码 | `bridge/wechat.mjs` · `/api/wechat` |
 | `@jieai/dsh-plugin-vet` | 扫描引擎原样内置（20 条规则） | `vendor/vet/scanner-bin/` · `/api/vet/scan` |
 | `@liustack/modlens` | 技能随包 + 新增取证据端点 | `vendor/skills/modlens/` · `/api/vision/read` |
 | `@vectorize-io/hindsight-coding-agents` | 自建「项目记忆」：按工作目录存条目、可导出 `CLAUDE.memory.md` | `bridge/memory.mjs` |

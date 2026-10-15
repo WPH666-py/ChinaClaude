@@ -12,6 +12,7 @@
  */
 import { createBridgeServer } from './server.mjs'
 import { findBinary, createScanner } from './discovery.mjs'
+import { createRemoteAccess } from './remote.mjs'
 import { existsSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -20,6 +21,8 @@ function parseArgs(argv) {
   const options = {
     port: Number(process.env.CCCN_PORT ?? 0) || 0,
     host: process.env.CCCN_HOST ?? '127.0.0.1',
+    /** Whether the bind address was stated explicitly, vs defaulted (see the LAN decision below). */
+    hostExplicit: Boolean(process.env.CCCN_HOST),
     baseUrl: process.env.CCCN_BASE_URL ?? undefined,
     authToken: process.env.CCCN_AUTH_TOKEN ?? undefined,
     model: process.env.CCCN_MODEL ?? undefined,
@@ -33,7 +36,7 @@ function parseArgs(argv) {
     const next = () => argv[++i]
     switch (arg) {
       case '--port': options.port = Number(next()); break
-      case '--host': options.host = next(); break
+      case '--host': options.host = next(); options.hostExplicit = true; break
       case '--base-url': options.baseUrl = next(); break
       case '--token': options.authToken = next(); break
       case '--model': options.model = next(); break
@@ -55,8 +58,8 @@ const HELP = `claude-code-cn bridge
 
 Usage: node src/cli.mjs [options]
 
-  --port <n>               listen port; 0 (default) lets the OS choose
-  --host <addr>            bind address (default 127.0.0.1)
+  --port <n>               listen port; 0 lets the OS choose
+  --host <addr>            bind address (default 127.0.0.1; 0.0.0.0 once 手机访问 is enabled)
   --base-url <url>         Anthropic-compatible endpoint
   --token <token>          relay bearer token (prefer CCCN_AUTH_TOKEN)
   --model <id>             default model for new sessions
@@ -126,6 +129,24 @@ const scanner = createScanner({
 const skillsRoot =
   process.env.CCCN_SKILLS_ROOT ?? join(dirname(fileURLToPath(import.meta.url)), '..', 'skills')
 
+/**
+ * Phone access: credentials plus the bind decision.
+ *
+ * THE BIND ADDRESS IS THE SECURITY SWITCH. `127.0.0.1` means only this machine can reach the port;
+ * `0.0.0.0` means every device on the network can, and the auth gate in server.mjs is then the only
+ * thing standing between a stranger and a shell on the user's machine. So the default is loopback and
+ * a wider bind happens ONLY when the user has explicitly turned LAN access on — never by accident.
+ *
+ * It also has to be decided HERE, before `listen`, because a socket's bind address is fixed once it
+ * opens. That is why the setting needs a restart to take effect, and why the UI says so.
+ */
+const remote = createRemoteAccess()
+const lanConfigured = remote.isEnabled()
+const host = options.hostExplicit ? options.host : lanConfigured ? '0.0.0.0' : '127.0.0.1'
+
+/** The built UI, staged beside the bridge so a phone can load the app from here. */
+const webRoot = join(sidecarRoot, 'web')
+
 const { server } = createBridgeServer({
   binary: discovered?.path ?? '',
   // Same directory the resolution above used, so `/api/discovery` reports the bundled CLI rather
@@ -136,6 +157,9 @@ const { server } = createBridgeServer({
   // Lets the inventory report whether a bundled file actually shipped, independently of
   // whether the runtime managed to load it.
   sidecarRoot: existsSync(sidecarRoot) ? sidecarRoot : undefined,
+  webRoot: existsSync(webRoot) ? webRoot : undefined,
+  host,
+  remote,
   defaults: {
     baseUrl: options.baseUrl,
     authToken: options.authToken,
@@ -144,10 +168,18 @@ const { server } = createBridgeServer({
   },
 })
 
-server.listen(options.port, options.host, () => {
+function onReady() {
   const address = server.address()
   const port = typeof address === 'object' && address ? address.port : options.port
-  const url = `http://${options.host}:${port}`
+  remote.setPort(port)
+
+  /**
+   * The URL handed to the shell is always loopback, even when the socket is bound to `0.0.0.0`:
+   * the webview is ON this machine, and `127.0.0.1` reaches a wildcard socket just fine while
+   * `0.0.0.0` reads as a bug in a URL.
+   */
+  const wildcard = host === '0.0.0.0' || host === '::'
+  const url = `http://${wildcard ? '127.0.0.1' : host}:${port}`
 
   const scan = scanner.scan()
   const handshake = {
@@ -157,13 +189,38 @@ server.listen(options.port, options.host, () => {
     binarySource: discovered?.source ?? null,
     baseUrl: options.baseUrl ?? scan.baseUrl ?? 'https://api.deepseek.com/anthropic',
     hasCredential: Boolean(options.authToken),
+    /** Where a phone should point, when LAN access is on. Null otherwise. */
+    lanUrl: lanConfigured ? remote.urlFor(port) : null,
   }
 
   // Single line, prefixed, so the shell can parse it out of mixed logging.
   process.stdout.write(`CCCN_READY ${JSON.stringify(handshake)}\n`)
   process.stderr.write(`bridge: listening on ${url}\n`)
+  if (lanConfigured) {
+    process.stderr.write(`bridge: LAN access ON — phone URL ${remote.urlFor(port) ?? '(no LAN address)'}\n`)
+  }
   if (!discovered) process.stderr.write('bridge: WARNING no claude.exe discovered\n')
-})
+}
+
+/**
+ * A port that changes every launch would break the phone's bookmark, so the shell asks for a fixed
+ * one. But a busy port must not stop the app from starting, and falling back changes the LAN URL —
+ * hence the note in the log rather than a silent switch.
+ */
+function onListenError(error) {
+  if (error?.code === 'EADDRINUSE' && options.port !== 0) {
+    process.stderr.write(`bridge: port ${options.port} is taken; falling back to an OS-assigned port\n`)
+    options.port = 0
+    server.listen(0, host, onReady)
+    server.once('error', onListenError)
+    return
+  }
+  process.stderr.write(`bridge: cannot listen on ${host}: ${String(error?.message ?? error)}\n`)
+  process.exit(1)
+}
+
+server.once('error', onListenError)
+server.listen(options.port, host, onReady)
 
 const shutdown = () => {
   server.close(() => process.exit(0))

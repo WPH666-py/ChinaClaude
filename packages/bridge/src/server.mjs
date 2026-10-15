@@ -21,8 +21,16 @@ import { fetchBalance } from './balance.mjs'
 import { testConnection } from './connect-test.mjs'
 import { saveAttachments, attachmentsUsage, clearAttachments } from './attachments.mjs'
 import { checkForUpdate, createUpdateInstaller, publicCheckResult, DEFAULT_SOURCES } from './update.mjs'
+import { createRemoteAccess, SESSION_COOKIE } from './remote.mjs'
+import { publicModels, writeModels, keyForBaseUrl } from './models.mjs'
+import { readSessions, writeSessions } from './session-store.mjs'
+import { createWechatNotifier } from './wechat.mjs'
+import { ORIGIN_SCRIPT, ORIGIN_SCRIPT_PATH, pairPage, parseForm, readFormBody, serveWebFile } from './webhost.mjs'
 
 const MAX_BODY_BYTES = 1024 * 1024
+
+/** How long a paired phone stays paired without re-entering a code. */
+const PAIR_COOKIE_MAX_AGE = 30 * 24 * 60 * 60
 
 /**
  * Load a feature module on first use.
@@ -106,6 +114,30 @@ export function createBridgeServer(options) {
 
   /** @type {Map<string, ClaudeSession>} */
   const sessions = new Map()
+
+  /**
+   * Persist the session list across restarts, debounced.
+   *
+   * Writing on EVERY event would hit the disk in bursts (a single answer emits many tool events),
+   * so a short debounce coalesces them into one write. A final flush on close guarantees the last
+   * turn lands even if the app is quit right after it.
+   */
+  let saveTimer = null
+  function flushSessions() {
+    if (saveTimer) {
+      clearTimeout(saveTimer)
+      saveTimer = null
+    }
+    writeSessions([...sessions.values()].map((session) => session.toSnapshot()))
+  }
+  function scheduleSave() {
+    if (saveTimer) return
+    saveTimer = setTimeout(() => {
+      saveTimer = null
+      flushSessions()
+    }, 800)
+    saveTimer.unref?.()
+  }
   /**
    * The scanner behind `/api/discovery`, which is what the UI reports as "where claude.exe came
    * from".
@@ -123,6 +155,20 @@ export function createBridgeServer(options) {
     ...(options.resolvedBinary ? { resolvedBinary: options.resolvedBinary } : {}),
   })
 
+  /**
+   * LAN access policy and credentials.
+   *
+   * Created by the ENTRY POINT and handed in, because the bind address depends on whether LAN access
+   * is enabled — a decision the entry point must make before it calls `listen`.
+   */
+  const remote = options.remote ?? createRemoteAccess()
+
+  /** The built UI, staged into the sidecar so a phone has something to load. */
+  const webRoot = options.webRoot ?? null
+
+  /** Requests from this machine are trusted; everything else must pair first. */
+  const hostIsLan = Boolean(options.host) && options.host !== '127.0.0.1'
+
   const updater = createUpdateInstaller()
   /**
    * The shell's own log ring, teed onto the process's stdout/stderr.
@@ -134,6 +180,14 @@ export function createBridgeServer(options) {
   const logRing = createLogRing()
   logRing.tee()
   const feedback = createFeedbackInbox()
+
+  /**
+   * 微信接入：企业微信群机器人出站通知。
+   *
+   * 与 remote 同一条规则——webhook 是凭据，只有本机（loopback）能读能写；页面永远只拿到掩码。
+   * 推送是 best-effort：通知发不出去绝不能连累它要描述的那次会话。
+   */
+  const wechat = createWechatNotifier()
 
   /**
    * 项目记忆 → `--append-system-prompt`。
@@ -241,6 +295,82 @@ export function createBridgeServer(options) {
       return
     }
 
+    /**
+     * ---- phone bootstrap ------------------------------------------------------
+     * Runs BEFORE the gate, and both paths are public on purpose:
+     *   /bridge-origin.js  no secret — it only tells the page where its own API lives
+     *   /pair              the form a phone must be able to reach in order to authenticate at all
+     */
+    if (req.method === 'GET' && url.pathname === ORIGIN_SCRIPT_PATH) {
+      res.writeHead(200, { 'content-type': 'text/javascript; charset=utf-8', 'cache-control': 'no-store' })
+      res.end(ORIGIN_SCRIPT)
+      return
+    }
+
+    if (url.pathname === '/pair') {
+      const current = remote.authorize(req)
+      const canPair = remote.isEnabled() && !current.loopback
+
+      if (req.method === 'POST') {
+        const token = canPair ? remote.redeemPairCode(parseForm(await readFormBody(req)).code) : null
+        if (!token) {
+          res.writeHead(canPair ? 401 : 403, {
+            'content-type': 'text/html; charset=utf-8',
+            'cache-control': 'no-store',
+          })
+          res.end(
+            pairPage({
+              message: !canPair
+                ? '局域网访问未开启：请在电脑端的「设置 → 手机访问」里打开，然后重启应用。'
+                : '配对码不正确或已过期，请在电脑端重新生成。',
+              showForm: canPair,
+            }),
+          )
+          return
+        }
+        res.writeHead(303, {
+          location: '/',
+          /**
+           * HttpOnly: the page never needs to read it, so JS cannot leak it.
+           * SameSite=Lax: set by a top-level form POST and then sent on the follow-up navigation,
+           * which is exactly the pairing flow.
+           * NO `Secure`: this is plain HTTP on a LAN, and a Secure cookie would simply be dropped —
+           * which would look like "pairing silently does nothing".
+           */
+          'set-cookie': `${SESSION_COOKIE}=${token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${PAIR_COOKIE_MAX_AGE}`,
+          'cache-control': 'no-store',
+        })
+        res.end()
+        return
+      }
+
+      // GET /pair: the desktop, or a phone that is already paired, has nothing to do here.
+      if (current.ok) {
+        res.writeHead(303, { location: '/', 'cache-control': 'no-store' })
+        res.end()
+        return
+      }
+      res.writeHead(current.status, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' })
+      res.end(pairPage({ message: current.message, showForm: current.reason !== 'lan-disabled' }))
+      return
+    }
+
+    /**
+     * ---- the gate -------------------------------------------------------------
+     * Everything below this line is either loopback or paired. The desktop webview is loopback, so its
+     * behaviour is unchanged; a LAN peer without a valid cookie gets an actionable page, not a bare 401.
+     */
+    const gate = remote.authorize(req)
+    if (!gate.ok) {
+      if (url.pathname.startsWith('/api/')) {
+        sendJson(res, gate.status, { error: gate.message, reason: gate.reason })
+      } else {
+        res.writeHead(gate.status, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' })
+        res.end(pairPage({ message: gate.message, showForm: gate.reason !== 'lan-disabled' }))
+      }
+      return
+    }
+
     try {
       // ---- health -------------------------------------------------------------
       if (req.method === 'GET' && url.pathname === '/api/health') {
@@ -255,6 +385,152 @@ export function createBridgeServer(options) {
           hasCredential: Boolean(defaults.authToken),
           sessions: sessions.size,
         })
+        return
+      }
+
+      // ---- shared model config -------------------------------------------------
+      /**
+       * WHAT THIS IS FOR: the desktop webview and a phone browser are different origins, so they do not
+       * share localStorage. A fully configured desktop therefore still looked unbound on the phone. The
+       * desktop publishes its provider list here; the phone reads it and skips retyping endpoints and
+       * model names in its own binding form.
+       *
+       * TRUST NOTE: this route NEVER returns credentials. The stored snapshot holds the desktop's keys,
+       * but both responses below go through `publicModels()`, which blanks them — so the key is asked
+       * for once on the phone and stays there, and the desktop's credential does not cross the LAN as
+       * plain HTTP. Writes stay loopback-only so a phone can never change what the desktop uses.
+       */
+      if (url.pathname === '/api/models') {
+        if (req.method === 'GET') {
+          sendJson(res, 200, { ...publicModels(), loopback: gate.loopback })
+          return
+        }
+        if (req.method === 'POST') {
+          if (!gate.loopback) {
+            sendJson(res, 403, { error: '只有电脑端可以修改模型配置' })
+            return
+          }
+          const body = await readJsonBody(req)
+          writeModels(body.providers)
+          // Echo the public view, not the stored snapshot: the snapshot would hand the key back to the
+          // caller, and no response on this route should carry a secret even on the trusted path.
+          sendJson(res, 200, publicModels())
+          return
+        }
+      }
+
+      // ---- phone access (LAN) -------------------------------------------------
+      /**
+       * Every management route here is LOOPBACK-ONLY, and that is not a nicety: pairing codes must be
+       * mintable only by someone physically at the machine. A phone that could mint its own code, or
+       * close the door on the desktop, would defeat the point of pairing.
+       */
+      if (url.pathname === '/api/remote') {
+        if (req.method === 'GET') {
+          sendJson(res, 200, {
+            ...remote.status(),
+            /** Whether the socket is ACTUALLY reachable from the LAN right now, vs merely configured. */
+            active: hostIsLan,
+            /** Whether this request came from the machine itself, so the UI can adapt. */
+            loopback: gate.loopback,
+          })
+          return
+        }
+
+        if (req.method === 'POST') {
+          if (!gate.loopback) {
+            sendJson(res, 403, { error: '只有电脑端可以修改手机访问设置' })
+            return
+          }
+          const body = await readJsonBody(req)
+          sendJson(res, 200, {
+            ...remote.setEnabled(body.enabled === true),
+            active: hostIsLan,
+            /**
+             * The bind address is fixed when the socket opens, so this cannot take effect now. Saying
+             * so beats a toggle that silently appears to do nothing.
+             */
+            restartRequired: true,
+          })
+          return
+        }
+      }
+
+      if (url.pathname === '/api/remote/pair-code' && req.method === 'POST') {
+        if (!gate.loopback) {
+          sendJson(res, 403, { error: '配对码只能在电脑端生成' })
+          return
+        }
+        if (!remote.isEnabled()) {
+          sendJson(res, 409, { error: '请先开启局域网访问并重启应用，再生成配对码' })
+          return
+        }
+        sendJson(res, 200, { ...remote.issuePairCode(), url: remote.urlFor() })
+        return
+      }
+
+      if (url.pathname === '/api/remote/revoke' && req.method === 'POST') {
+        if (!gate.loopback) {
+          sendJson(res, 403, { error: '只有电脑端可以解除配对' })
+          return
+        }
+        // Invalidates every issued cookie at once — the action a user can reason about when they want
+        // to be sure a lost or borrowed phone no longer reaches this machine.
+        sendJson(res, 200, { ...remote.revokeAll(), active: hostIsLan })
+        return
+      }
+
+      // ---- 微信通知（企业微信群机器人） ---------------------------------------
+      /**
+       * LOOPBACK-ONLY, for the same reason pairing codes are: the webhook URL is a credential that
+       * lets its holder post into the user's group. A paired phone must not be able to read it (only
+       * the masked form is ever returned), replace it, or trigger a send to an address it chose.
+       */
+      if (url.pathname === '/api/wechat') {
+        if (req.method === 'GET') {
+          sendJson(res, 200, { ...wechat.status(), loopback: gate.loopback })
+          return
+        }
+        if (req.method === 'POST') {
+          if (!gate.loopback) {
+            sendJson(res, 403, { error: '只有电脑端可以修改微信通知设置' })
+            return
+          }
+          const body = await readJsonBody(req)
+          // 200 carries a rejected webhook as data (ok:false), matching /api/test-connection: a form
+          // that must show WHY is not a transport failure.
+          sendJson(res, 200, wechat.configure({
+            webhookUrl: body.webhookUrl,
+            enabled: body.enabled,
+            notifyOnFinish: body.notifyOnFinish,
+          }))
+          return
+        }
+      }
+
+      if (url.pathname === '/api/wechat/test' && req.method === 'POST') {
+        if (!gate.loopback) {
+          sendJson(res, 403, { error: '只有电脑端可以发送测试消息' })
+          return
+        }
+        const body = await readJsonBody(req).catch(() => ({}))
+        // Let the test form try a URL before committing to it: without this the user would have to
+        // save a possibly-wrong credential just to find out it does not work. Saving it also enables
+        // push, so a successful test leaves the feature ready to go.
+        const draftUrl = typeof body.webhookUrl === 'string' ? body.webhookUrl.trim() : ''
+        if (draftUrl) {
+          const saved = wechat.configure({ webhookUrl: draftUrl, enabled: true })
+          if (!saved.ok) {
+            sendJson(res, 200, saved)
+            return
+          }
+        }
+        // Push is best-effort; the result is data either way (ok:false for a refused send).
+        const result = await wechat.notify({
+          title: 'ChinaClaude-Mobot 测试消息',
+          lines: ['如果你在群里看到这条消息，说明微信通知已经接通。', `时间：${new Date().toLocaleString('zh-CN')}`],
+        })
+        sendJson(res, 200, result)
         return
       }
 
@@ -607,9 +883,19 @@ export function createBridgeServer(options) {
          * present it as this provider's. `??` keeps absent distinct from empty, the same rule the
          * session route already follows.
          */
-        const apiKey = body.apiKey !== undefined && body.apiKey !== null ? String(body.apiKey) : (defaults.authToken ?? '')
+        const effectiveBaseUrl =
+          typeof body.baseUrl === 'string' && body.baseUrl ? body.baseUrl : defaults.baseUrl
+        let apiKey = body.apiKey !== undefined && body.apiKey !== null ? String(body.apiKey) : (defaults.authToken ?? '')
+        /**
+         * A REMOTE caller has no key BY DESIGN: models are shared with phones with their credentials
+         * stripped, so the phone's balance request always arrives empty and used to render "未配置
+         * API KEY" while the desktop showed a figure for the same account. Resolve the stored key for
+         * this endpoint on the bridge instead — the phone still never receives the credential. Loopback
+         * keeps the original rule, so a typed-but-empty key on the desktop still means "no key".
+         */
+        if (!apiKey && !gate.loopback) apiKey = keyForBaseUrl(effectiveBaseUrl)
         const result = await fetchBalance({
-          baseUrl: typeof body.baseUrl === 'string' && body.baseUrl ? body.baseUrl : defaults.baseUrl,
+          baseUrl: effectiveBaseUrl,
           apiKey,
           balanceUrl: typeof body.balanceUrl === 'string' ? body.balanceUrl : '',
           balancePath: typeof body.balancePath === 'string' ? body.balancePath : '',
@@ -678,47 +964,8 @@ export function createBridgeServer(options) {
         // to `history`, and the SSE handler replays it. Maintaining a second buffer here
         // would double up on the first connection.
         sessions.set(session.id, session)
-        session.on('exit', () => {
-          // Keep the session object for history; mark it closed via status.
-        })
-
-        /**
-         * Mirror the session's own log lines into the shell ring.
-         *
-         * The session log is where "claude.exe exited with code 1" lands, and it is written to the
-         * per-session SSE channel — which a user looking at the menu bar's log window may not have
-         * open. Copying the lines into the ring is what makes one window show the whole story.
-         */
-        session.on('log', (line) =>
-          logRing.append(String(line?.level ?? 'info'), String(line?.text ?? line?.message ?? line ?? ''), 'session'),
-        )
-
-        /**
-         * Let 安全防护 look at what the session is carrying.
-         *
-         * OBSERVE, NEVER REWRITE: a hit is recorded and counted, and the event still reaches the UI
-         * byte for byte. Silently editing a tool result to hide a secret would break the transcript
-         * the user is reading, and would make the app's output differ from what the model saw — a
-         * far worse bug than the leak it would be hiding. Blocks are surfaced as a verdict for the
-         * user to act on, which is also the only thing this layer can honestly promise.
-         */
-        session.on('event', (event) => {
-          if (!event || event.kind === 'log' || event.kind === 'closed') return
-          void withFeature('defend', async (mod) => {
-            let text = ''
-            try {
-              text = JSON.stringify(event)
-            } catch {
-              return null
-            }
-            // Size guard: one 2 MB tool result must not turn every event into a stringify + scan.
-            if (!text || text.length > 262144) return null
-            return await mod.guard({ text, where: `session:${event.kind ?? 'event'}`, action: 'observe' })
-          }).catch(() => {
-            // A protection layer that can break the transcript is worse than no protection layer.
-          })
-        })
-
+        wireSession(session)
+        scheduleSave()
         session.start()
         sendJson(res, 201, session.toJSON())
         return
@@ -791,6 +1038,11 @@ export function createBridgeServer(options) {
             sendJson(res, 409, { accepted: false, error: 'a turn is already running' })
             return
           }
+
+          // A session restored from disk has no child yet: launch it on the first turn, so reopening
+          // the app and continuing a conversation just works — and only then, so merely viewing a
+          // restored session never starts a process.
+          if (!session.child) await startRestoredSession(session)
 
           const preflight = await runPreflight({
             text,
@@ -945,6 +1197,9 @@ export function createBridgeServer(options) {
           if (purge) {
             session.kill()
             sessions.delete(session.id)
+            // Persist the removal right away, not on the next debounce: a purged session must not
+            // come back when the app is reopened.
+            flushSessions()
             sendJson(res, 200, { removed: true, id: session.id })
             return
           }
@@ -954,14 +1209,132 @@ export function createBridgeServer(options) {
         }
       }
 
+      /**
+       * ---- the built UI -------------------------------------------------------
+       * A phone has no Tauri shell, so the bridge itself serves the page. This sits AFTER every API
+       * route so a real endpoint is never shadowed by a static file, and BEFORE the 404 so a
+       * client-side route (which is not a file) still returns the app instead of "not found".
+       */
+      if (req.method === 'GET' && webRoot && !url.pathname.startsWith('/api/')) {
+        if (serveWebFile(res, webRoot, url.pathname)) return
+        if (serveWebFile(res, webRoot, '/index.html')) return
+      }
+
       sendJson(res, 404, { error: 'not found', path: url.pathname })
     } catch (error) {
       sendJson(res, 500, { error: String(error?.message ?? error) })
     }
   })
 
+  /**
+   * Attach the bridge-level listeners every session needs, whether it was just created or restored
+   * from disk. Extracted so the two paths cannot drift: a fix to protection or notifications lands
+   * on restored sessions too, instead of only on freshly created ones.
+   */
+  function wireSession(session) {
+    // A finished CLI keeps its session for the transcript; `status` alone records that it closed.
+    session.on('exit', () => {})
+
+    // Mirror the session's own log lines into the shell ring, so the menu bar's log window shows the
+    // whole story even when its per-session SSE channel is not open.
+    session.on('log', (line) =>
+      logRing.append(String(line?.level ?? 'info'), String(line?.text ?? line?.message ?? line ?? ''), 'session'),
+    )
+
+    session.on('event', (event) => {
+      if (!event || event.transient === true || event.kind === 'log' || event.kind === 'closed') return
+
+      // Remember the conversation so a restart can bring it back.
+      scheduleSave()
+
+      /**
+       * Let 安全防护 look at what the session is carrying.
+       *
+       * OBSERVE, NEVER REWRITE: a hit is recorded and counted, and the event still reaches the UI
+       * byte for byte. Silently editing a tool result to hide a secret would break the transcript
+       * the user is reading, and would make the app's output differ from what the model saw — a
+       * far worse bug than the leak it would be hiding.
+       */
+      void withFeature('defend', async (mod) => {
+        let text = ''
+        try {
+          text = JSON.stringify(event)
+        } catch {
+          return null
+        }
+        // Size guard: one 2 MB tool result must not turn every event into a stringify + scan.
+        if (!text || text.length > 262144) return null
+        return await mod.guard({ text, where: `session:${event.kind ?? 'event'}`, action: 'observe' })
+      }).catch(() => {
+        // A protection layer that can break the transcript is worse than no protection layer.
+      })
+
+      /**
+       * 微信通知：一轮对话结束时推一条。
+       *
+       * 挂在 `result` 事件上而不是 `exit`：`exit` 只在进程结束时发生，而用户真正关心的是"这一轮
+       * 跑完了"，那可能发生很多次。推送是 best-effort，吞掉一切异常——通知失败绝不能变成会话故障。
+       */
+      if (event.kind === 'result' && wechat.status().enabled && wechat.status().notifyOnFinish) {
+        const cwd = session.options.cwd ?? ''
+        void wechat
+          .notify({
+            title: event.isError ? '会话出错（ChinaClaude-Mobot）' : '会话已完成（ChinaClaude-Mobot）',
+            lines: [
+              `目录：${cwd}`,
+              event.isError ? '结果：本轮以错误结束' : '结果：本轮已正常完成',
+              event.durationMs ? `耗时：${Math.round(event.durationMs / 1000)} 秒` : '',
+            ],
+          })
+          .catch(() => {})
+      }
+    })
+  }
+
+  /**
+   * Launch the child for a session restored from disk, filling in what a snapshot does not carry.
+   *
+   * Credentials are re-resolved HERE from the shared model list, because the snapshot stores none:
+   * the endpoint's key is looked up on the bridge and never written to disk or handed to the client.
+   */
+  async function startRestoredSession(session) {
+    const baseUrl = session.options.baseUrl || defaults.baseUrl
+    session.options.binary = session.options.binary || options.binary
+    session.options.cwd = session.options.cwd || process.cwd()
+    if (!session.options.apiKey) session.options.apiKey = keyForBaseUrl(baseUrl) || undefined
+    if (!session.options.authToken) session.options.authToken = defaults.authToken || undefined
+    if (!session.options.proxy) session.options.proxy = defaults.proxy || undefined
+    session.options.skillsRoot = options.skillsRoot
+    // Resume the same conversation; a snapshot without an id simply starts a fresh one.
+    session.options.resumeSessionId = session.claudeSessionId ?? undefined
+    try {
+      session.options.systemPromptAppend = await memoryAppendix(session.options.cwd)
+    } catch {
+      /* memory is an enhancement, never a precondition */
+    }
+    session.start()
+  }
+
+  /**
+   * Bring back the previous run's sessions.
+   *
+   * Done LAST, after every collaborator these sessions need (`logRing`, `withFeature`, `wechat`) has
+   * been created, so `wireSession` can attach to them immediately.
+   */
+  for (const snapshot of readSessions()) {
+    const restored = ClaudeSession.fromSnapshot(snapshot, {
+      binary: options.binary,
+      proxy: defaults.proxy || undefined,
+      skillsRoot: options.skillsRoot,
+    })
+    wireSession(restored)
+    sessions.set(restored.id, restored)
+  }
+
   server.on('close', () => {
     for (const session of sessions.values()) session.stop()
+    // Final flush: the last turn must survive an app quit that happens right after it.
+    flushSessions()
   })
 
   return { server, sessions, defaults }

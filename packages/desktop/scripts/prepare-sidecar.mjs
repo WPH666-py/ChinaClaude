@@ -5,6 +5,7 @@
  *   sidecar/node.exe             the runtime
  *   sidecar/claude.exe           the Claude Code CLI itself (231 MB — see below)
  *   sidecar/bridge/*.mjs         the bridge (no external dependencies)
+ *   sidecar/web/                 the built UI, served to a phone (see below)
  *   sidecar/skills/.claude/skills/modlens/   a bundled Claude Code Skill
  *   sidecar/vet/                 the vendored plugin-vet audit engine + its one dependency
  *
@@ -31,6 +32,7 @@
  *   CCCN_SKIP_CLAUDE=1 stage without the CLI (the result needs Claude Code installed separately)
  *   CCCN_SKIP_SKILLS=1 stage without skills (bridge-only builds)
  *   CCCN_SKIP_VET=1    stage without the audit engine (bridge-only builds)
+ *   CCCN_SKIP_WEB=1    stage without the built UI (no phone access in the result)
  */
 import { copyFileSync, cpSync, mkdirSync, rmSync, statSync, readdirSync, writeFileSync, readFileSync, existsSync } from 'node:fs'
 import { dirname, join } from 'node:path'
@@ -229,6 +231,34 @@ if (process.env.CCCN_SKIP_CLAUDE === '1') {
   copyFileSync(claudeSource, join(target, 'claude.exe'))
   const mb = (statSync(join(target, 'claude.exe')).size / 1024 / 1024).toFixed(1)
   log(`staged CLI: ${claudeSource} (${mb} MB)`)
+}
+
+// --- the built UI, for phone access -------------------------------------------
+/**
+ * The bridge serves this to a phone, because a phone has no Tauri shell to load the page from.
+ *
+ * It is a SECOND copy of `web/dist` — the Tauri webview gets its own copy embedded in the binary at
+ * compile time, which the node process cannot read. The duplication is ~250 KB against a 300 MB
+ * installer, so the alternative (extracting assets out of the executable) is not worth it.
+ */
+if (process.env.CCCN_SKIP_WEB === '1') {
+  log('CCCN_SKIP_WEB=1 — built UI not staged; phone access will have no page to serve')
+} else {
+  const webSource = join(repoRoot, 'packages', 'web', 'dist')
+  if (!existsSync(join(webSource, 'index.html'))) {
+    console.error(
+      `[sidecar] ERROR the built UI is missing: ${webSource}\n` +
+        '[sidecar] run `pnpm --dir packages/web build` first, or set CCCN_SKIP_WEB=1 to ship without\n' +
+        '[sidecar] phone access.',
+    )
+    process.exit(1)
+  }
+  // Clean copy: `cpSync` never removes files that vanished from the source, so a stale, unreferenced
+  // `assets/index-*.{css,js}` from an earlier build would otherwise survive into the installer.
+  const webDest = join(target, 'web')
+  rmSync(webDest, { recursive: true, force: true })
+  cpSync(webSource, webDest, { recursive: true })
+  log(`staged built UI (${dirSizeMB(webDest)} MB) -> sidecar/web`)
 }
 
 log(`done -> ${target}`)

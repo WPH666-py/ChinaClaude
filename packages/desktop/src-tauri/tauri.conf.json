@@ -23,12 +23,13 @@
       "resources/sidecar/node.exe",
       "resources/sidecar/claude.exe",
       "resources/sidecar/bridge",
+      "resources/sidecar/web",
       "resources/sidecar/skills",
       "resources/sidecar/vet"
     ],
     "windows": {
       "webviewInstallMode": {
-        "type": "downloadBootstrapper",
+        "type": "offlineInstaller",
         "silent": true
       },
       "nsis": {

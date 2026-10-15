@@ -86,6 +86,8 @@ async function load() {
 function settingsSectionFor(feature: string): string | null {
   if (feature === 'audit') return 'audit'
   if (feature === 'import') return 'import'
+  // 手机访问 and 微信通知 share the 「设置 → 手机访问」 page, so both land there.
+  if (feature === 'remote' || feature === 'wechat') return 'remote'
   return null
 }
 

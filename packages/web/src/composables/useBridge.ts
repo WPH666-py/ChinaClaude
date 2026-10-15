@@ -14,12 +14,16 @@ import type {
   SendVerdict,
   SessionView,
   TranscriptListing,
+  RemoteStatus,
+  WechatStatus,
   UpdateCheck,
   UpdateProgress,
   VetReport,
   VetStatus,
   ProviderBalance,
 } from '../types'
+// Type-only: erased at compile time, so this does not create a runtime cycle with the settings store.
+import type { Provider } from './useSettings'
 
 /**
  * A stable fingerprint of every field the UI derives from a session.
@@ -354,6 +358,22 @@ export function useBridge() {
     return session
   }
 
+  /**
+   * The provider list the desktop published to the bridge, for a phone that has none of its own.
+   *
+   * The desktop and a phone browser are different origins and therefore different localStorage, so
+   * without this a fully configured desktop still showed "您还未绑定模型" on the phone. Endpoints and
+   * model names only: the bridge never sends credentials, so the key is entered on this device.
+   */
+  async function fetchSharedModels(): Promise<{ providers: Provider[]; loopback: boolean }> {
+    return api<{ providers: Provider[]; loopback: boolean }>('/api/models')
+  }
+
+  /** Publish the desktop's providers so paired phones can reuse them. Loopback-only server side. */
+  async function publishModels(providers: Provider[]): Promise<void> {
+    await api<unknown>('/api/models', { method: 'POST', body: JSON.stringify({ providers }) })
+  }
+
   async function openSession(sessionId: string) {
     activeSessionId.value = sessionId
     events.value = []
@@ -599,6 +619,77 @@ export function useBridge() {
   }
 
   /**
+   * Phone access state: whether LAN exposure is configured, whether the socket is actually bound to
+   * the network yet, and which addresses a phone could use.
+   */
+  async function remoteStatus(): Promise<RemoteStatus> {
+    return api<RemoteStatus>('/api/remote')
+  }
+
+  /**
+   * Turn LAN exposure on or off.
+   *
+   * Persisted only — the bridge decides its bind address at launch, so the caller must tell the user
+   * to restart. The response carries `restartRequired` rather than leaving that implicit.
+   */
+  async function setRemoteEnabled(enabled: boolean): Promise<RemoteStatus & { restartRequired?: boolean }> {
+    return api<RemoteStatus & { restartRequired?: boolean }>('/api/remote', {
+      method: 'POST',
+      body: JSON.stringify({ enabled }),
+    })
+  }
+
+  /**
+   * Mint a short pairing code for a phone to type.
+   *
+   * Desktop-only by design: the bridge refuses this from any non-loopback caller, so a phone cannot
+   * issue its own way in.
+   */
+  async function issuePairCode(): Promise<{ code: string; expiresAt: number; ttlMs: number; url: string | null }> {
+    return api('/api/remote/pair-code', { method: 'POST' })
+  }
+
+  /** Invalidate every paired device at once. */
+  async function revokePairedDevices(): Promise<RemoteStatus> {
+    return api<RemoteStatus>('/api/remote/revoke', { method: 'POST' })
+  }
+
+  /**
+   * State of the 企业微信群机器人 push: whether a webhook is stored, whether push is on, and the
+   * MASKED form of the webhook. The full URL never comes back — it is a credential.
+   */
+  async function wechatStatus(): Promise<WechatStatus> {
+    return api<WechatStatus>('/api/wechat')
+  }
+
+  /**
+   * Save the webhook / push toggle.
+   *
+   * Desktop-only by design: the bridge refuses this from any non-loopback caller, so a paired phone
+   * cannot read the credential, replace it, or aim a send somewhere of its choosing. An invalid URL
+   * comes back as `{ ok: false, error }` rather than throwing, because the form must show why.
+   */
+  async function configureWechat(patch: {
+    webhookUrl?: string
+    enabled?: boolean
+    notifyOnFinish?: boolean
+  }): Promise<WechatStatus> {
+    return api<WechatStatus>('/api/wechat', { method: 'POST', body: JSON.stringify(patch) })
+  }
+
+  /**
+   * Send one test message, optionally trying a URL that has not been saved yet. A refused send is
+   * data (`ok: false`), never an exception. On success, the bridge has also saved and enabled the
+   * draft URL, so callers should refresh the status afterwards.
+   */
+  async function testWechat(webhookUrl?: string): Promise<{ ok: boolean; error?: string; sentAt?: number }> {
+    return api('/api/wechat/test', {
+      method: 'POST',
+      body: JSON.stringify(webhookUrl ? { webhookUrl } : {}),
+    })
+  }
+
+  /**
    * Ask whether a newer release exists.
    *
    * Resolves even when nothing was reachable — the bridge reports that as `ok: false` rather than an
@@ -762,6 +853,8 @@ export function useBridge() {
     startSessionPolling,
     stopSessionPolling,
     createSession,
+    fetchSharedModels,
+    publishModels,
     openSession,
     send,
     stopSession,
@@ -774,6 +867,13 @@ export function useBridge() {
     listTranscripts,
     exportTranscript,
     vetStatus,
+    remoteStatus,
+    setRemoteEnabled,
+    issuePairCode,
+    revokePairedDevices,
+    wechatStatus,
+    configureWechat,
+    testWechat,
     checkUpdate,
     startUpdateDownload,
     updateStatus,

@@ -26,6 +26,15 @@ const bridge = useBridge()
 const store = useSettings()
 
 /**
+ * Whether the bridge is serving this page to a phone rather than the desktop webview rendering it.
+ *
+ * The bridge injects this flag into the page it hosts; the desktop webview never has it. It is the one
+ * reliable way to tell the two apart on the SAME UI bundle, and it decides which side of model sharing
+ * we are on: a phone ADOPTS the desktop's providers, the desktop PUBLISHES them.
+ */
+const servedByBridge = (globalThis as Record<string, unknown>).__CCCN_SERVED_BY_BRIDGE__ === true
+
+/**
  * Permission preset chosen for the session about to be created.
  *
  * Held as a preset ID, not a raw CLI mode string: the four choices ARE the product decision, and
@@ -48,14 +57,22 @@ const settingsOpen = ref(false)
  * find it themselves after clicking a menu item that names it would be a small betrayal. Passed as a
  * prop rather than a query parameter so a menu click can retarget an already-open window.
  */
-const settingsSection = ref<'general' | 'permission' | 'models' | 'pricing' | 'bundled' | 'import' | 'audit' | 'about'>('general')
+const settingsSection = ref<'general' | 'permission' | 'models' | 'pricing' | 'bundled' | 'import' | 'audit' | 'remote' | 'about'>('general')
 
 function openSettings(section: string) {
-  const allowed = ['general', 'permission', 'models', 'pricing', 'bundled', 'import', 'audit', 'about']
+  const allowed = ['general', 'permission', 'models', 'pricing', 'bundled', 'import', 'audit', 'remote', 'about']
   settingsSection.value = (allowed.includes(section) ? section : 'general') as typeof settingsSection.value
   settingsOpen.value = true
 }
-const sidebarCollapsed = ref(false)
+
+/**
+ * Collapsed by default on a phone-width viewport.
+ *
+ * At that width the sidebar stops being a column and becomes an overlay drawer, and a drawer that is
+ * open on first paint hides the conversation the user just navigated to. The same flag drives both
+ * behaviours, so the initial value has to agree with the media query below.
+ */
+const sidebarCollapsed = ref(typeof window !== 'undefined' && window.matchMedia('(max-width: 720px)').matches)
 const tab = ref<'chat' | 'trace'>('chat')
 /** Set when the user explicitly asks for a new session, so polling never overrides it. */
 const setupPinnedByUser = ref(false)
@@ -532,6 +549,27 @@ onMounted(async () => {
       // Left empty on failure; the bridge falls back to its own working directory.
     }
   }
+  /**
+   * Model sharing between the desktop and its phones.
+   *
+   * A phone reaching the bridge is a different origin from the desktop webview, so it shares no
+   * localStorage and looked unconfigured on a fully set-up machine. The phone ADOPTS the desktop's
+   * endpoints and model names from the bridge; the desktop PUBLISHES them. No credential is shared —
+   * the phone's user enters the API key once on the phone, and the existing "缺少 API-KEY" banner in the
+   * setup form points at where. Only one side runs per page, and the injected flag tells them apart.
+   * Runs before the setup decision below, so a phone that adopts models does not flash the binding form.
+   */
+  if (servedByBridge) {
+    try {
+      const shared = await bridge.fetchSharedModels()
+      store.hydrateFromBridge(shared.providers)
+    } catch {
+      // Unreachable or unpaired: fall back to this device's own binding form.
+    }
+  } else {
+    void bridge.publishModels(store.settings.value.providers).catch(() => {})
+  }
+
   setupOpen.value = bridge.sessions.value.length === 0
 
   // Development affordances: `?picker=1` / `?catalog=1` open those overlays directly, which
@@ -585,6 +623,23 @@ onMounted(async () => {
   // Deliberately NOT awaited: the update check must never delay or block the app coming up.
   void checkForUpdates()
 })
+
+/**
+ * Keep the bridge's copy of the desktop's providers current.
+ *
+ * The phone reads that copy when it opens, so a model added AFTER the phone loaded — or the very
+ * first binding on a fresh install — has to travel too, not just the list present at mount. Desktop
+ * only: on a phone this view is the consumer, and pushing back would let it overwrite the source.
+ */
+if (!servedByBridge) {
+  watch(
+    () => store.settings.value.providers,
+    (providers) => {
+      void bridge.publishModels(providers).catch(() => {})
+    },
+    { deep: true },
+  )
+}
 
 /**
  * Adopt a session that appeared while we were showing the setup form (created over the API,
@@ -741,6 +796,9 @@ function newSession() {
     />
 
     <div class="frame" :class="{ 'frame--rail': sidebarCollapsed }">
+    <!-- Narrow screens turn the sidebar into an overlay, so the conversation behind it must not stay
+         clickable; tapping here closes it. Invisible in the two-column layout. -->
+    <div class="frame__scrim" aria-hidden="true" @click="sidebarCollapsed = true" />
     <div class="sidebarCol">
       <Sidebar
         :sessions="bridge.sessions.value"

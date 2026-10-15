@@ -10,10 +10,15 @@
  * Run: node packages/bridge/test/all.mjs
  */
 import { spawn } from 'node:child_process'
+import { mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 
 const here = dirname(fileURLToPath(import.meta.url))
+
+/** Roots created for this run, cleaned up at the end. */
+const tempDirs = []
 
 /**
  * Ordered list of suites. `initialize`, `provider-switch` and `watchdog` are diagnostic probes that
@@ -38,12 +43,28 @@ const SUITES = [
   { name: 'connect-test', path: join(here, 'connect-test.mjs') },
   { name: 'cost', path: join(here, 'cost.mjs') },
   { name: 'update (unit)', path: join(here, 'update.mjs') },
+  { name: 'wechat (unit)', path: join(here, 'wechat.mjs') },
+  { name: 'lan-access', path: join(here, 'lan-access.mjs') },
   { name: 'pricing (unit)', path: join(here, '..', '..', '..', '_probe', 'pricing-check.mjs') },
 ]
 
 function run(file) {
   return new Promise((resolve) => {
-    const child = spawn(process.execPath, [file], { stdio: ['ignore', 'pipe', 'pipe'] })
+    /**
+     * A throwaway data root PER SUITE.
+     *
+     * WHY: session snapshots are now written to `<dataRoot>/sessions.json` and read back on bridge
+     * startup. Sharing one root would let an earlier suite's conversations be restored into a later
+     * one, breaking suites that count sessions absolutely (`removal`) — and a shared root against a
+     * real install would read and overwrite the user's own conversations. A fresh root per suite
+     * keeps every suite hermetic; `lan-access.mjs` overrides CCCN_DATA_DIR itself and is unaffected.
+     */
+    const dataDir = mkdtempSync(join(tmpdir(), 'cccn-test-'))
+    tempDirs.push(dataDir)
+    const child = spawn(process.execPath, [file], {
+      stdio: ['ignore', 'pipe', 'pipe'],
+      env: { ...process.env, CCCN_DATA_DIR: dataDir },
+    })
     let out = ''
     child.stdout.on('data', (c) => {
       out += c
@@ -84,6 +105,13 @@ for (const row of summary) {
 
 const failed = summary.filter((row) => !row.ok)
 console.log(`\n${summary.length - failed.length}/${summary.length} suites passed · ${totalPassed}/${totalChecks} checks`)
+for (const dir of tempDirs) {
+  try {
+    rmSync(dir, { recursive: true, force: true })
+  } catch {
+    /* the temp dir is disposable either way */
+  }
+}
 if (failed.length > 0) {
   console.log('failed suites: ' + failed.map((row) => row.name).join(', '))
   process.exit(1)

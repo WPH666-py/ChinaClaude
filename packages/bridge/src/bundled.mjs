@@ -85,6 +85,32 @@ export const CORE_COMPONENTS = [
  */
 export const BUILTIN_PLUGINS = [
   {
+    id: 'web-mobile',
+    name: 'dsh-web-mobile',
+    version: '3.0.6',
+    summary: '把本机会话搬到手机上：同一 Wi-Fi 下用手机浏览器或微信内置浏览器打开本机界面，查看并继续会话。',
+    port: {
+      kind: 'native',
+      detail: '自建「手机访问」：桥托管与桌面同一套界面；loopback 免鉴权，非 loopback 必须先用配对码换取设备令牌；局域网监听默认关闭，开启后重启生效。',
+      evidence: 'bridge/remote.mjs',
+      endpoint: '/api/remote',
+      feature: 'remote',
+    },
+  },
+  {
+    id: 'wechat',
+    name: 'dsh-wechat',
+    version: '0.10.0',
+    summary: '把会话进展出站推送到企业微信群机器人：手机不用在线、无需公网或域名。',
+    port: {
+      kind: 'native',
+      detail: '自建「微信通知」：企业微信群机器人 webhook，地址只存本机数据目录、界面仅回显掩码、仅 loopback 可改；推送默认关闭。',
+      evidence: 'bridge/wechat.mjs',
+      endpoint: '/api/wechat',
+      feature: 'wechat',
+    },
+  },
+  {
     id: 'vet',
     name: '@jieai/dsh-plugin-vet',
     version: '0.3.12',

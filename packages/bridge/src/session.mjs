@@ -1059,6 +1059,61 @@ export class ClaudeSession extends EventEmitter {
     return true
   }
 
+  /**
+   * The serializable state that lets this session come back after a restart.
+   *
+   * Credentials are DELIBERATELY absent: this lands on disk beside the other feature state, and a
+   * plaintext key there would be a worse leak than any convenience it buys. A restored session
+   * re-resolves its key from the shared model list only when the user continues it.
+   */
+  toSnapshot() {
+    return {
+      id: this.id,
+      claudeSessionId: this.claudeSessionId,
+      createdAt: this.createdAt,
+      model: this.options.model ?? this.initialModel ?? null,
+      resolvedModel: this.resolvedModel,
+      permissionMode: this.options.permissionMode ?? null,
+      effort: this.options.effort ?? null,
+      baseUrl: this.options.baseUrl ?? null,
+      cwd: this.options.cwd ?? null,
+      seq: this.seq,
+      history: this.history.slice(),
+    }
+  }
+
+  /**
+   * Rebuild a session from a snapshot WITHOUT spawning anything.
+   *
+   * The child is created lazily on the first turn (the bridge calls `start()` when a message
+   * arrives), so reopening the app restores the conversation instantly and only launches a process
+   * when the user actually continues it — which also means a restored session whose endpoint is no
+   * longer configured never runs by itself.
+   */
+  static fromSnapshot(snapshot, overrides = {}) {
+    const session = new ClaudeSession({
+      id: snapshot.id,
+      binary: overrides.binary,
+      cwd: snapshot.cwd ?? overrides.cwd,
+      baseUrl: snapshot.baseUrl ?? overrides.baseUrl,
+      model: snapshot.model ?? undefined,
+      permissionMode: snapshot.permissionMode ?? undefined,
+      effort: snapshot.effort ?? undefined,
+      proxy: overrides.proxy,
+      skillsRoot: overrides.skillsRoot,
+      resumeSessionId: snapshot.claudeSessionId ?? undefined,
+      ...(overrides.authToken !== undefined ? { authToken: overrides.authToken } : {}),
+      ...(overrides.apiKey !== undefined ? { apiKey: overrides.apiKey } : {}),
+    })
+    session.claudeSessionId = snapshot.claudeSessionId ?? null
+    session.resolvedModel = snapshot.resolvedModel ?? null
+    session.createdAt = Number(snapshot.createdAt) || Date.now()
+    session.history = Array.isArray(snapshot.history) ? snapshot.history : []
+    session.seq = Number(snapshot.seq) || session.history.reduce((max, e) => Math.max(max, Number(e?.seq) || 0), 0)
+    session.status = 'closed'
+    return session
+  }
+
   toJSON() {
     return {
       id: this.id,

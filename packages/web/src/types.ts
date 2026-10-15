@@ -335,6 +335,53 @@ export interface VetStatus {
   engine: string | null
 }
 
+  // ---- phone access (LAN) ----------------------------------------------------
+
+/** One local IPv4 address a phone could point at, with the adapter it came from. */
+export interface RemoteAddress {
+  name: string
+  address: string
+  /** Almost certainly not the network a phone is on (VPN, VM host-only, link-local). */
+  virtual: boolean
+}
+
+/**
+ * State of LAN exposure.
+ *
+ * `enabled` is the CONFIGURED intent, `active` is whether the socket is actually bound to the network
+ * yet — they diverge for exactly as long as it takes to restart, which is why both are sent.
+ */
+export interface RemoteStatus {
+  enabled: boolean
+  active: boolean
+  loopback: boolean
+  url: string | null
+  addresses: RemoteAddress[]
+  pairedDevices: number
+  configFile: string
+}
+
+/**
+ * State of the 企业微信群机器人 outbound notification bridge.
+ *
+ * `enabled` is the saved intent, `configured` says whether a webhook is stored at all — the two are
+ * distinct because push can be off while a webhook is still saved. The webhook URL is a credential
+ * that grants posting rights into the group, so it NEVER crosses the bridge in full: the page only
+ * ever receives `webhookMasked`. A `configure`/`test` call returns `{ ok, error? }` as DATA rather
+ * than throwing, because the caller is a form that has to show why a URL was refused.
+ */
+export interface WechatStatus {
+  enabled: boolean
+  configured: boolean
+  notifyOnFinish: boolean
+  webhookMasked: string
+  /** Present on reads: whether the caller is the desktop itself. */
+  loopback?: boolean
+  configFile: string
+  ok?: boolean
+  error?: string
+}
+
 // ---- provider account balance ----------------------------------------------
 
 /**

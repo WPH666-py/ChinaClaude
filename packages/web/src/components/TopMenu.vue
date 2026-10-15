@@ -209,4 +209,48 @@ async function devtools() {
   font-family: var(--dsw-font-family-code);
   font-size: 11px;
 }
+
+/**
+ * A phone is ~360–430 CSS px wide, and the ten entries above need ~620 px in one row. Left as a
+ * single row the bar simply clips: the last entries ("开发者工具", "退出") cannot be reached at all,
+ * because a flex row with `overflow: hidden` neither wraps nor scrolls.
+ *
+ * WRAPPING, NOT SCROLLING: these are app commands, not content — a horizontally scrolled menu hides
+ * the exit button behind a gesture nobody expects on a menu bar. Wrapping to two or three rows keeps
+ * every entry a tap away, and the bar grows instead of clipping. The width at which this kicks in
+ * matches the shell's existing phone breakpoint (`720px`), so the whole layout flips together.
+ */
+@media (max-width: 720px) {
+  .tm {
+    flex-wrap: wrap;
+    height: auto;
+    min-height: 34px;
+    padding: 4px 8px;
+    row-gap: 2px;
+  }
+
+  /* The spacer only exists to push the notice/version to the right edge of a full-width row; once
+     the bar wraps it adds an empty line, so the version is pinned right by its own rule instead. */
+  .tm__spacer {
+    display: none;
+  }
+
+  .tm__brand {
+    margin-right: 6px;
+  }
+
+  .tm__item {
+    padding: 3px 7px;
+  }
+
+  /* `{notice}` is a transient sentence, not a menu entry: on a narrow bar it is dropped so the
+     entries always win the row, and the same text still surfaces in the panels that own it. */
+  .tm__notice {
+    display: none;
+  }
+
+  .tm__version {
+    margin-left: auto;
+  }
+}
 </style>

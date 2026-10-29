@@ -912,7 +912,7 @@ Claude Code 从 `<root>/.claude/skills/<name>/SKILL.md` 加载技能，也能加
 
 ### 「内置」到底是什么意思
 
-被要求内置的是十二个 DSH 插件。它们**都不能在本客户端里直接运行** —— 本应用跑的是 `claude.exe`，
+被要求内置的是十九个 DSH 插件。它们**都不能在本客户端里直接运行** —— 本应用跑的是 `claude.exe`，
 没有 Cordis/DSH 运行时。所以逐个给出的是**能力**，而不是把包塞进 node_modules：
 
 | 上游插件 | 本版怎么内置 | 可核对入口 |
@@ -928,7 +928,14 @@ Claude Code 从 `<root>/.claude/skills/<name>/SKILL.md` 加载技能，也能加
 | `dsh-rule-engine` | 自建「规则引擎」：关键字 / 正则命中即标注、可追加提示 | `bridge/rules.mjs` |
 | `dsh-defend` | 自建「安全防护」：扫密钥 / 危险命令 / 外传，**只记隐去后的片段** | `bridge/defend.mjs` |
 | `@goodandready/dsh-time-machine` | 自建「时间机器」：文件副本快照，比对与单文件回滚，**不依赖 git** | `bridge/checkpoints.mjs` |
-| `@xbzbing/dsh-git-panel` | 自建「代码管理」：状态 / 差异 / 历史 / 提交 | `bridge/gitpanel.mjs` |
+| `@xbzbing/dsh-git-panel` | 自建「代码管理」：状态 / 差异 / 暂存 / 分支 / 储藏 / 提交，git 以 argv 调用、不经 shell；丢弃与删除储藏需二次确认 | `bridge/gitpanel.mjs` · `/api/git` |
+| `dsh-workbench` | 自建「工作台」：工作区文件树、文本 / Markdown / 图片预览、全文搜索、变更审阅（git + **按轮差异**）；路径在工作区两侧做 realpath 收敛 | `bridge/workbench.mjs` · `bridge/turns.mjs` · `/api/workbench/changes` |
+| `dsh-opencode-go` | 自建「连接器」：上游自带 Anthropic 路由，一把 Key 即可当服务商用；模型目录与额度走 `/v1/models`、`/v1/usage` | `bridge/connectors.mjs` · `/api/connectors` |
+| `dsh-connect-workbuddy` | **CLI 路由**：桥把 Anthropic 请求扁平化后调用 WorkBuddy 自带的 `codebuddy -p`（只读、`dontAsk`），答案包回 Anthropic JSON/SSE；首次需在 CLI 里 `/login`，未登录返回 401 `unauthenticated` | `bridge/workbuddy.mjs` · `/proxy/workbuddy/v1/messages` |
+| `dsh-connect-trae` | **反向接入（MCP）**：Trae 无对话 API，但支持 MCP；本应用给出可粘贴的 stdio 服务器片段，让 Trae 调用本应用的工具。本应用调用 Trae 模型仍无可用通道（无 token、无 CLI、无本机 API，已查实） | `bridge/trae.mjs` · `/api/connectors/trae/integration` |
+| `dsh-office-tools` | 自建 MCP 服务：`word_*` / `excel_*` / `ppt_*` 九个工具，零依赖 OOXML 引擎，路径限制在工作区内；`excel_update` / `ppt_update` 就地改包，保留样式、图表与未知部件 | `bridge/mcp.mjs` · `/api/office` |
+| `dsh-remote-ssh-ops` | 自建「远程运维」：主机存储、指纹确认、远程命令与文件读取；调系统 OpenSSH，自带 known_hosts，未确认指纹拒绝执行 | `bridge/ssh.mjs` · `/api/ssh` |
+| `@xmanrui/dsh-im` | 自建「消息通道」：五个 Webhook 渠道（企微 / 飞书 / 钉钉加签 / Slack / Discord）+ **Telegram 长轮询 / Matrix sync 机器人**（聊天↔会话绑定、偏移持久化、指数退避）；只允许官方域名、响应只回掩码、写入仅电脑端 | `bridge/im.mjs` · `bridge/bots.mjs` · `/api/im` · `/api/im/bots` |
 
 三条刻意的取舍，写在代码里也写在这里：
 
@@ -939,6 +946,11 @@ Claude Code 从 `<root>/.claude/skills/<name>/SKILL.md` 加载技能，也能加
    界面上而偷偷改动工具结果，会让用户看到的记录与模型看到的输入不一致 —— 那比它想遮住的问题更糟。
 3. **不确定就说不确定**：本机没装 git（确实没有），代码管理窗口给出的是安装提示与「重新检测」，
    而不是一个空列表；modlens 没配视觉 provider 时给的是 `doctor` 的原话，而不是一个假装的加载动画。
+4. **连接器只在协议真的能对接时才说自己可用**：`dsh-opencode-go` 有 Anthropic 兼容路由，所以一把
+   Key 就能当服务商用；`dsh-connect-workbuddy` / `dsh-connect-trae` 走的是各家专有 SSE 加上本机
+   App 的登录态（WorkBuddy 还会把 Token 用 AES-GCM 加密、要靠它自己的原生绑定解密），`claude.exe`
+   根本发不出那种请求 —— 所以这两个在界面上写的是「只登记、不接管对话」，而不是给一个点了必然失败的
+   服务商预设。把它们变成真能用，需要在本机加一层把它们翻译成 Anthropic 协议的代理，那是下一批的事。
 
 > 版本对齐：上表里的版本号是**参照机上装的那一版**（`~/.dsh/profiles/desktop`），也就是这些实现
 > 写的时候对着的上游。`modlens` 本地随包的是 3.26.5，与参照机的 3.26.1 不同，插件管理窗口会把两行
@@ -968,6 +980,71 @@ Claude Code 从 `<root>/.claude/skills/<name>/SKILL.md` 加载技能，也能加
 界面是新的、桥是旧的，而所有端点都照常应答，没有任何检查发现。现在
 `_probe/verify-packaged-menu.ps1` 会先比对 `packages/bridge/src/*.mjs` 与 staged 副本的哈希，
 不一致就直接判失败。
+
+### 0.2.2：安装版「双击没反应」，是 sidecar 路径对不上
+
+0.2.1 的安装包在别人的电脑上双击图标，进程半秒内就没了，连一句报错都没有。原因不是没装上，而是
+**装上了、外壳却找不到自己的运行时**：
+
+| 谁 | 以为运行时在哪 | 实际在哪 |
+| --- | --- | --- |
+| 外壳（`sidecar_dir`） | `<exe>\sidecar`，或编译机的 checkout | — |
+| 安装包（`bundle.resources`） | — | `<exe>\resources\sidecar` |
+| Tauri `resource_dir()` | Windows 上就是 exe 所在目录，不会再拼一层 `resources` | — |
+
+找不到就让 `setup` 返回 `Err`，`Builder::build()` 上的 `.expect()` 随即 panic；而 release 是
+`windows_subsystem = "windows"`，panic 没有控制台可写 —— 于是整个应用静默退出，图标点了等于没点。
+开发机还有第二个候选：`env!("CARGO_MANIFEST_DIR")`，那是**编译期写死**的 checkout 路径，只有作者这台
+机器上存在。这就是「我这里好好的」的全部原因。
+
+三处改动：
+
+- `sidecar_dir()` 改为先试 `resource_dir\resources\sidecar`、再试 `resource_dir\sidecar`，checkout 只在
+  debug 构建里当最后一个候选；
+- 启动失败不再静默：`setup` 的 `Err` 与任何 panic 都写 `%LOCALAPPDATA%\ChinaClaude\logs\shell.log`，
+  并弹一个 `MessageBoxW`（`extern "system"` 声明，不引新依赖）；
+- `claude-code-cn.exe --self-check` 在不创建窗口的前提下解析 sidecar 并输出 JSON；`pnpm build` 末尾的
+  `verify:bundle` 断言 `candidate` 必须是 `resource_dir/resources/sidecar`、解析结果必须落在安装布局里，
+  并把生成的 `installer.nsi` 里 `resources\sidecar\node.exe` 一起核对。`.github/workflows/desktop-bundle.yml`
+  在干净的 runner 上跑同一套断言 —— 那才是唯一能证明「别人的电脑也能启动」的环境。
+
+### 0.2.2 之二：`\\?\` 开头的路径，Node 不认
+
+路径对上之后，安装版**还是**起不来 —— 但这次有话说，因为上面那个 `MessageBoxW` 已经装上了：
+
+```
+ChinaClaude 启动失败
+Failed to setup app: error encountered during setup hook: bridge exited before reporting ready
+
+bridge 输出：
+Error: EISDIR: illegal operation on a directory, lstat 'C:'
+    at Object.realpathSync (node:fs:2734:25)
+    at toRealPath (node:internal/modules/helpers:63:13)
+    at Module._findPath (node:internal/modules/cjs/loader:781:22)
+```
+
+`EISDIR ... lstat 'C:'` 是 Node 在**解析入口脚本**时就炸了，桥一行代码都没跑到。原因是这条路的形式：
+
+| 谁 | 看到的是 |
+| --- | --- |
+| Tauri `resource_dir()` | `\\?\C:\Users\...\resources\sidecar`（verbatim 前缀） |
+| Win32 `CreateProcess` | 完全接受 |
+| Node 的模块解析器 | 不接受：把盘符拆成 `C:` 去 `lstat`，得到 `EISDIR` |
+
+verbatim 前缀（`\\?\`）是 Win32 的「绕过 MAX_PATH 检查」写法，只对文件 API 有意义；Node 用它做模块
+寻址时会先 `realpathSync` 逐级拼路径，第一级就是 `C:` —— 一个目录，于是报错。而开发机上这条路根本
+走不到：debug 构建优先命中 checkout 候选，那是个**普通路径**。两个 bug 是同一类：**只有装完才会出现**。
+
+修法是一个 `plain_path()`：把 `\\?\C:\...` 还原成 `C:\...`（`\\?\UNC\server\share` 还原成
+`\\server\share`），`node.exe`、入口 `cli.mjs`、工作目录、`CCCN_SIDECAR_DIR` 全部用它。诊断也补了两处：
+`shell.log` 里多了一行 `[spawn] node=... entry=... cwd=...`，以及桥自己的 stderr 逐行落盘
+（`[bridge-stderr]`）并附在弹窗里 —— 这条 EISDIR 就是这么读出来的。
+
+更值得记的是**检查本身不够**：`--self-check` 当时只说「布局对了」，应用却仍然打不开。所以现在
+`--self-check` 会**真的把桥拉起来**（用 verbatim 形式传路径，正好复现用户的场景），拿到 `CCCN_READY`
+才算通过，JSON 里多一个 `bridgeReady` 字段；`verify:bundle` 第 3 节断言它，缺了直接判失败。同理，
+MSI 的存在不再是「打出来了」，而是断言 `main.wxs` 里确实带着 `resources\sidecar\node.exe`、
+`claude.exe` 和 WebView2 离线安装器。
 
 ---
 
@@ -1008,7 +1085,7 @@ node packages\bridge\test\initialize.mjs   # initialize 能力握手，4 项
 node packages\bridge\test\watchdog.mjs     # 父进程强杀后桥是否自我了断
 ```
 
-一条命令跑完整套回归（**14 个套件 / 232 项**，全部通过才返回 0）：
+一条命令跑完整套回归（**21 个套件**，全部通过才返回 0；其中 `workbench` / `connectors` 是纯模块套件，不启 `claude.exe`）：
 
 ```powershell
 node packages\bridge\test\all.mjs
@@ -1339,3 +1416,22 @@ GitHub 的 release asset 自带 `digest`（`sha256:...`），下载后校验；*
 
 `packages/bridge/test/update.mjs`——32 项，**离线**（stub 掉 `fetch`），毫秒级，已注册进 `all.mjs`。
 覆盖版本序、源回退、多源取最新、以及上面那两条不变量。
+
+## 界面：右侧工作台、三标签与服务器管理
+
+- 主区顶部有 **对话 / 轨迹 / Git** 三个标签；
+- 菜单栏「工作台」打开的是**右侧常驻侧栏**（440px，中间区让出宽度），收起后右侧留一条竖排入口，随时点开——不再是遮住对话的模态窗；
+- 顶部菜单不含品牌字段与「退出」，末尾是**服务器管理**：显示桥协议版本、应用版本、桥地址、上游地址、凭据是否配置、活动会话数（只读，重启仍在菜单栏）；
+- WorkBuddy / Trae 连接器现在把本机 CLI 视为「已检测」，并暴露 `route: "cli"` 与 CLI 路径；卡片内可直接打开登录窗口与测试连接。
+
+## 模型一键导入 / 内置 git / 内嵌 Git 视图
+
+- **模型页导入**：设置 → 模型 新增「从 Trae 导入模型」「从 WorkBuddy 导入模型」「从 opencode 导入模型」三个按钮，走 `POST /api/models/import`；导入的是指向本桥 `/proxy/trae`、`/proxy/workbuddy` 的行（opencode 用 Key 拉真实模型目录），重复导入不会产生重复行。
+- **内置便携版 git**：`vendor/git`（MinGit 2.56.0，GPL-2.0）随包进入 `sidecar/git`；`gitpanel.mjs` 的发现顺序是 `CCCN_GIT` → 随包 git → PATH → 系统安装目录，因此没装 git 的机器也能直接用 Git 标签。
+- **Git 内嵌视图**：`ShellDialog` 增加 `inline` 形态（无遮罩、静态定位），Git 标签在中间区直接渲染 `GitPanel`，不再浮层。
+- 说明：Trae 的登录状态可实时读到（`traecli login status`）；WorkBuddy CLI 没有 `status` 子命令，所以卡片显示「未验证」，需要点一次「测试 CLI 连接」才知道是否已登录——这一点没有用假状态糊过去。
+
+## WorkBuddy 登录状态的显示方式（诚实版）
+
+- **Trae**：`traecli login status` 可实时读，卡片显示「已登录/未登录」；
+- **WorkBuddy**：CLI 没有 `status` 子命令（`doctor` 返回 `No mapping found`），`~/.codebuddy` 里也没有明文凭据可读。因此桥只记录**上一次「测试 CLI 连接」的结果**（`%LOCALAPPDATA%\ChinaClaude\cli-status.json`），卡片显示「上次测试：已登录/未登录 · 时间」。这不是实时状态，卡片文案也这么写，避免用猜测冒充事实。

@@ -88,6 +88,8 @@ interface GitAvailableAnswer {
 const props = defineProps<{
   /** The workspace to inspect. Absent means no session is open yet. */
   cwd?: string | null
+  /** 内嵌形态：由中间区的 Git 标签直接渲染，而不是弹窗。 */
+  inline?: boolean
 }>()
 
 const emit = defineEmits<{ (e: 'close'): void }>()
@@ -121,6 +123,31 @@ const message = ref('')
 const commitOutput = ref('')
 const commitError = ref('')
 const committing = ref(false)
+
+/** Staging / branch / stash state. Kept beside the commit box: they are the same "write" surface. */
+type BranchRow = { ref: string; name: string; upstream: string; current: boolean; remote: boolean }
+type StashRow = { id: string; at: string; subject: string }
+const branches = ref<BranchRow[]>([])
+const branchPick = ref('')
+const stashEntries = ref<StashRow[]>([])
+const stashMessage = ref('')
+const opBusy = ref(false)
+const opError = ref('')
+const opOutput = ref('')
+/** Second-click guards, one per destructive action; a timer clears them so a stale one cannot fire. */
+const discardArmed = ref<string | null>(null)
+const dropArmed = ref<string | null>(null)
+let armTimer = 0
+
+function arm(target: 'discard' | 'drop', key: string) {
+  if (target === 'discard') discardArmed.value = key
+  else dropArmed.value = key
+  window.clearTimeout(armTimer)
+  armTimer = window.setTimeout(() => {
+    discardArmed.value = null
+    dropArmed.value = null
+  }, 5000)
+}
 
 const stagedFiles = computed(() => (status.value?.files ?? []).filter((file) => file.staged))
 /** Worktree-side changes, including a file that is staged AND edited further (`MM`) — git means both. */
@@ -295,7 +322,135 @@ async function commit() {
   }
 }
 
-onMounted(check)
+/**
+ * One write to the repository, with the shared busy/error plumbing every button below needs.
+ *
+ * WHY ERRORS ARE SHOWN VERBATIM: git's own refusal ("error: Your local changes would be overwritten")
+ * names the file and the reason; replacing it with "操作失败" throws away the only actionable part.
+ */
+async function gitPost<T extends { ok: boolean; error?: string; output?: string }>(body: Record<string, unknown>): Promise<T | null> {
+  opBusy.value = true
+  opError.value = ''
+  opOutput.value = ''
+  try {
+    const response = await fetch(`${baseUrl()}/api/git`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ ...body, cwd: props.cwd }),
+    })
+    const answer = (await response.json()) as T
+    if (answer.output) opOutput.value = answer.output
+    if (!answer.ok) opError.value = answer.error ?? '操作失败'
+    return answer
+  } catch (cause) {
+    opError.value = `操作失败：${cause instanceof Error ? cause.message : String(cause)}`
+    return null
+  } finally {
+    opBusy.value = false
+  }
+}
+
+async function setStage(paths: string[], staged: boolean) {
+  const answer = await gitPost({ action: staged ? 'unstage' : 'stage', files: paths })
+  if (answer?.ok) await refresh()
+}
+
+async function stageAll() {
+  const paths = [...unstagedFiles.value, ...untrackedFiles.value].map((file) => file.path)
+  if (paths.length === 0) {
+    opError.value = '没有要暂存的改动'
+    return
+  }
+  await setStage(paths, false)
+}
+
+async function discardSelected() {
+  if (!selected.value) return
+  const key = selected.value.path
+  if (discardArmed.value !== key) {
+    arm('discard', key)
+    opError.value = `再点一次「丢弃」将永久删除 ${key} 的未提交改动（不可恢复）`
+    return
+  }
+  discardArmed.value = null
+  const answer = await gitPost({ action: 'discard', path: key, confirm: true })
+  if (answer?.ok) {
+    selected.value = null
+    patch.value = ''
+    await refresh()
+  }
+}
+
+async function loadBranches() {
+  if (!props.cwd) return
+  try {
+    const response = await fetch(`${baseUrl()}/api/git?cwd=${encodeURIComponent(props.cwd)}&what=branches`)
+    const answer = (await response.json()) as { ok: boolean; branches?: BranchRow[]; error?: string }
+    branches.value = answer.ok ? answer.branches ?? [] : []
+    const current = branches.value.find((entry) => entry.current)
+    branchPick.value = current?.name ?? branchPick.value
+    if (!answer.ok && answer.error) opError.value = answer.error
+  } catch (cause) {
+    opError.value = `读取分支失败：${cause instanceof Error ? cause.message : String(cause)}`
+  }
+}
+
+async function switchBranch() {
+  if (branchPick.value === '') return
+  const answer = await gitPost({ action: 'checkout', branch: branchPick.value })
+  if (answer?.ok) {
+    await refresh()
+    await loadBranches()
+  }
+}
+
+async function loadStash() {
+  if (!props.cwd) return
+  try {
+    const response = await fetch(`${baseUrl()}/api/git?cwd=${encodeURIComponent(props.cwd)}&what=stash`)
+    const answer = (await response.json()) as { ok: boolean; entries?: StashRow[]; error?: string }
+    stashEntries.value = answer.ok ? answer.entries ?? [] : []
+    if (!answer.ok && answer.error) opError.value = answer.error
+  } catch (cause) {
+    opError.value = `读取储藏失败：${cause instanceof Error ? cause.message : String(cause)}`
+  }
+}
+
+async function saveStash() {
+  const answer = await gitPost({ action: 'stash-save', message: stashMessage.value })
+  if (answer?.ok) {
+    stashMessage.value = ''
+    await loadStash()
+    await refresh()
+  }
+}
+
+async function useStash(entry: StashRow, action: 'apply' | 'pop' | 'drop') {
+  const index = Number((entry.id.match(/\{(\d+)\}/) ?? [])[1])
+  if (!Number.isInteger(index)) {
+    opError.value = `无法识别储藏序号：${entry.id}`
+    return
+  }
+  if (action === 'drop' && dropArmed.value !== entry.id) {
+    arm('drop', entry.id)
+    opError.value = `再点一次「删除」将永久丢弃 ${entry.id}（不可恢复）`
+    return
+  }
+  dropArmed.value = null
+  const answer = await gitPost({ action: `stash-${action}`, index, confirm: action === 'drop' })
+  if (answer?.ok) {
+    await loadStash()
+    await refresh()
+  }
+}
+
+onMounted(async () => {
+  await check()
+  if (phase.value === 'ready') {
+    await loadBranches()
+    await loadStash()
+  }
+})
 /** Switching workspace is a different repository; nothing shown before the switch still applies. */
 watch(
   () => props.cwd,
@@ -306,13 +461,21 @@ watch(
     patch.value = ''
     commitOutput.value = ''
     commitError.value = ''
-    if (phase.value === 'ready') await refresh()
+    branches.value = []
+    stashEntries.value = []
+    opError.value = ''
+    opOutput.value = ''
+    if (phase.value === 'ready') {
+      await refresh()
+      await loadBranches()
+      await loadStash()
+    }
   },
 )
 </script>
 
 <template>
-  <ShellDialog title="代码管理" :meta="cwd ?? ''" :width="880" @close="emit('close')">
+  <ShellDialog title="代码管理" :meta="cwd ?? ''" :width="880" :inline="inline" @close="emit('close')">
     <!-- git is genuinely absent: say so, with the one thing that fixes it. -->
     <div v-if="phase === 'unavailable'" class="gp__missing">
       <div class="gp__missingTitle">本机没有可用的 git</div>
@@ -339,6 +502,21 @@ watch(
         <div v-if="error" class="banner banner--error">{{ error }}</div>
         <div v-if="status?.truncated" class="banner banner--info">
           改动列表过长，只显示了一部分。
+        </div>
+
+        <div v-if="opError" class="banner banner--error">{{ opError }}</div>
+        <pre v-if="opOutput" class="gp__output">{{ opOutput }}</pre>
+
+        <!-- staging + branch -->
+        <div class="gp__ops">
+          <button class="btnGhost" type="button" :disabled="opBusy" @click="stageAll">全部暂存</button>
+          <span class="gp__spacer" />
+          <select v-model="branchPick" class="gp__select" :disabled="opBusy || branches.length === 0">
+            <option v-for="entry in branches" :key="entry.ref" :value="entry.name">
+              {{ entry.current ? '● ' : '' }}{{ entry.name }}{{ entry.remote ? '（远程）' : '' }}
+            </option>
+          </select>
+          <button class="btnGhost" type="button" :disabled="opBusy || branchPick === ''" @click="switchBranch">切换分支</button>
         </div>
 
         <div class="gp__groups">
@@ -408,6 +586,17 @@ watch(
         <pre v-if="patch" class="gp__diff">{{ patch }}</pre>
         <div v-else class="gp__diffEmpty">{{ patchNote || '点上面任意一个文件查看它的差异。' }}</div>
 
+        <!-- actions for the selected file: staging is reversible, discarding is not -->
+        <div v-if="selected" class="gp__fileOps">
+          <span class="gp__fileOpsName" :title="selected.path">{{ selected.path }}</span>
+          <button class="btnGhost" type="button" :disabled="opBusy" @click="setStage([selected.path], selected.staged)">
+            {{ selected.staged ? '取消暂存' : '暂存' }}
+          </button>
+          <button class="btnGhost btnGhost--danger" type="button" :disabled="opBusy" @click="discardSelected">
+            {{ discardArmed === selected.path ? '确认丢弃（不可恢复）' : '丢弃改动' }}
+          </button>
+        </div>
+
         <!-- commit -->
         <div class="gp__section">提交</div>
         <textarea
@@ -427,6 +616,24 @@ watch(
         </div>
         <div v-if="commitError" class="banner banner--error">{{ commitError }}</div>
         <pre v-if="commitOutput" class="gp__output">{{ commitOutput }}</pre>
+
+        <!-- stash -->
+        <div class="gp__section">储藏</div>
+        <div class="gp__ops">
+          <input v-model="stashMessage" class="gp__input gp__stashInput" placeholder="储藏备注（可选）" spellcheck="false" />
+          <button class="btnGhost" type="button" :disabled="opBusy" @click="saveStash">保存当前改动</button>
+        </div>
+        <div v-if="stashEntries.length === 0" class="gp__groupEmpty">没有储藏记录</div>
+        <div v-for="entry in stashEntries" :key="entry.id" class="gp__stashRow">
+          <code class="gp__sha">{{ entry.id }}</code>
+          <span class="gp__subject" :title="entry.subject">{{ entry.subject }}</span>
+          <span class="gp__time">{{ when(entry.at) }}</span>
+          <button class="btnGhost" type="button" :disabled="opBusy" @click="useStash(entry, 'apply')">应用</button>
+          <button class="btnGhost" type="button" :disabled="opBusy" @click="useStash(entry, 'pop')">弹出</button>
+          <button class="btnGhost btnGhost--danger" type="button" :disabled="opBusy" @click="useStash(entry, 'drop')">
+            {{ dropArmed === entry.id ? '确认删除' : '删除' }}
+          </button>
+        </div>
 
         <!-- history -->
         <div class="gp__section">最近提交</div>
@@ -449,7 +656,7 @@ watch(
         刷新
       </button>
       <span class="gp__spacer" />
-      <span class="gp__footNote">只读状态 / 差异 / 历史，另外支持提交；推送与拉取请用终端（模块刻意不实现）。</span>
+      <span class="gp__footNote">支持状态 / 差异 / 暂存 / 提交 / 分支切换 / 储藏；推送与拉取请用终端（模块刻意不实现）。</span>
     </template>
   </ShellDialog>
 </template>
@@ -755,5 +962,61 @@ watch(
 
 .gp__footNote {
   color: var(--dsw-alias-label-caption);
+}
+
+/* Staging / branch / stash controls. One row of small controls above the groups, because they act on
+   the whole working tree — the per-file actions live next to the diff they belong to. */
+.gp__ops {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 8px 0;
+  flex-wrap: wrap;
+}
+
+.gp__select {
+  max-width: 240px;
+  padding: 3px 6px;
+  border: 0.5px solid var(--dsw-alias-border-l1);
+  border-radius: 7px;
+  background: var(--dsw-alias-bg-layer-2);
+  color: var(--dsw-alias-label-secondary);
+  font-size: 12px;
+}
+
+.gp__fileOps {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 6px 0 2px;
+  flex-wrap: wrap;
+}
+
+.gp__fileOpsName {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--dsw-alias-label-tertiary);
+  font-family: var(--dsw-font-family-code);
+  font-size: 11.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.gp__stashInput {
+  flex: 1;
+  min-width: 160px;
+}
+
+.gp__stashRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 3px 2px;
+  font-size: 11.5px;
+}
+
+.gp__stashRow .gp__subject {
+  min-width: 0;
+  flex: 1;
 }
 </style>

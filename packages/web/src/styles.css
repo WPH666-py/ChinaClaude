@@ -46,12 +46,12 @@
   --dsw-static-neutral-bluish-500: rgb(151, 157, 166);
   --dsw-static-neutral-bluish-600: rgb(129, 133, 140);
   --dsw-static-neutral-bluish-750: rgb(67, 69, 74);
-  --dsw-static-neutral-bluish-800: rgb(53, 54, 56);
-  --dsw-static-neutral-bluish-850: rgb(44, 44, 46);
-  --dsw-static-neutral-bluish-875: rgb(35, 35, 36);
-  --dsw-static-neutral-bluish-900: rgb(27, 27, 28);
-  --dsw-static-neutral-bluish-950: rgb(21, 21, 23);
-  --dsw-static-neutral-bluish-1000: rgb(15, 17, 21);
+  --dsw-static-neutral-bluish-800: rgb(84, 86, 92);
+  --dsw-static-neutral-bluish-850: rgb(70, 72, 78);
+  --dsw-static-neutral-bluish-875: rgb(44, 45, 48);
+  --dsw-static-neutral-bluish-900: rgb(58, 60, 65);
+  --dsw-static-neutral-bluish-950: rgb(46, 48, 52);
+  --dsw-static-neutral-bluish-1000: rgb(24, 26, 30);
 
   /* ----------------------------------------------------- dark alias layer -- */
   --dsw-alias-bg-base: var(--dsw-static-neutral-bluish-950);
@@ -794,6 +794,23 @@ textarea {
   white-space: nowrap;
 }
 
+/* 顶栏左侧的产品名：让「这是 ChinaClaude」在任何页面都一眼可见，也方便手机端识别标签页。 */
+.topBar__brand {
+  flex: none;
+  padding-right: 8px;
+  color: var(--dsw-alias-label-primary);
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+}
+
+@media (max-width: 820px) {
+  .topBar__brand {
+    font-size: 15px;
+  }
+}
+
 /*
  * The same slot, as a button. It keeps the label's typography exactly — the directory is information
  * first — and only reveals itself as clickable on hover.
@@ -839,6 +856,25 @@ textarea {
   font-weight: 500;
   /* A two-character label must never break mid-word; it shrinks the bar around it instead. */
   white-space: nowrap;
+}
+
+/* 移动端手指点得动的尺寸：整行三等分、最小 44px 高（iOS/Android 的推荐触控目标）。 */
+@media (max-width: 820px) {
+  .tabs {
+    display: flex;
+    width: 100%;
+    gap: 6px;
+    padding: 4px;
+    border-radius: 12px;
+  }
+
+  .tab {
+    flex: 1 1 0;
+    min-height: 44px;
+    padding: 0 8px;
+    border-radius: 9px;
+    font-size: 15px;
+  }
 }
 
 .tab:hover {
@@ -934,10 +970,28 @@ textarea {
 /* User bubble: right-aligned, r22, bubble token (figma 659:38813). */
 .userRow {
   display: flex;
-  flex-direction: column;
-  align-items: flex-end;
-  gap: 6px;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
   margin-bottom: 18px;
+}
+
+.userRecall {
+  flex: none;
+  padding: 1px 9px;
+  border: 1px solid rgba(246, 165, 92, 0.5);
+  border-radius: 999px;
+  background: rgba(246, 165, 92, 0.14);
+  color: #ffc38a;
+  font-size: 11px;
+  line-height: 18px;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+
+.userRow:hover .userRecall,
+.userRecall:focus-visible {
+  opacity: 1;
 }
 
 .userBubble {
@@ -2044,4 +2098,421 @@ textarea {
    than the surrounding prose. */
 .st__hint--ok {
   color: var(--dsw-alias-state-success-primary);
+}
+
+/* 右侧工作台：把 ShellDialog 从"浮层"改成"侧栏" —— 只改容器定位，面板本身仍复用同一套组件。 */
+.dock {
+  position: fixed;
+  top: 34px;
+  right: 0;
+  bottom: 0;
+  width: var(--dock-w, 360px);
+  z-index: 30;
+  display: flex;
+  flex-direction: column;
+  border-left: 0.5px solid var(--dsw-alias-border-l1);
+  background: var(--dsw-alias-bg-primary);
+}
+
+.dock .sd {
+  position: static;
+  height: 100%;
+}
+
+.dock .sd__scrim {
+  display: none;
+}
+
+.dock .sd__panel {
+  position: static;
+  width: 100%;
+  max-width: none !important;
+  height: 100%;
+  max-height: none;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+/* 打开时把中间区让出宽度，而不是盖在对话上。 */
+.shell:has(.dock) .frame {
+  margin-right: calc(var(--dock-w, 360px) + 6px);
+}
+
+@media (max-width: 820px) {
+  /* 小屏工作台是覆盖式面板，不能再把内容挤窄。 */
+  .shell:has(.dock) .frame {
+    margin-right: 0;
+  }
+}
+
+/* 收起状态的右侧竖条入口 */
+.dockRail {
+  position: fixed;
+  top: 50%;
+  right: 0;
+  transform: translateY(-50%);
+  z-index: 25;
+  padding: 10px 4px;
+  font-size: 12px;
+  letter-spacing: 2px;
+  writing-mode: vertical-rl;
+  color: var(--dsw-alias-label-secondary);
+  background: var(--dsw-alias-bg-secondary);
+  border: 0.5px solid var(--dsw-alias-border-l1);
+  border-right: none;
+  border-radius: 6px 0 0 6px;
+  cursor: pointer;
+}
+
+.dockRail:hover {
+  color: var(--dsw-alias-label-primary);
+}
+
+/* 中间区与文件树之间的拖动条：细、可见、光标提示可拖。 */
+.dockGrip {
+  position: fixed;
+  top: 34px;
+  bottom: 0;
+  right: var(--dock-w, 360px);
+  width: 6px;
+  z-index: 31;
+  cursor: col-resize;
+  background: linear-gradient(90deg, transparent, rgba(0, 0, 0, 0.28));
+}
+
+.dockGrip:hover {
+  background: linear-gradient(90deg, transparent, rgba(246, 165, 92, 0.9));
+}
+
+/* 中间区的 Git 内嵌视图：撑满可用高度，由面板自己滚动。 */
+.centerGit {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.centerGit :deep(.sd) {
+  height: 100%;
+}
+
+/* 从本机导入：一行三列，标签不竖排 */
+.st__importRow {
+  display: grid;
+  grid-template-columns: 96px minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1.3fr);
+  gap: 8px;
+  align-items: center;
+  margin-top: 8px;
+}
+
+.st__importLabel {
+  white-space: nowrap;
+  color: var(--dsw-alias-label-secondary);
+  font-size: 13px;
+}
+
+.st__importRow .st__input {
+  min-width: 0;
+}
+
+/* 从本机导入：三行一列（每家厂商一行） */
+.st__importList {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.st__importList > button,
+.st__importList > .st__ghost {
+  width: 100%;
+  justify-content: flex-start;
+  white-space: nowrap;
+}
+
+.st__importKeyRow {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+/* 模型下拉：限高并自己滚动，避免长清单铺满整屏 */
+.pop__menu--scroll {
+  max-height: 340px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+/* 服务商容器里的模型子项 */
+.st__modelList {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+/* 文件路径选择这类「浏览…」按钮：淡橙色打底，和深色背景分开 */
+.tinyButton--text {
+  width: auto;
+  padding: 0 10px;
+  background: rgba(246, 165, 92, 0.18);
+  border: 1px solid rgba(246, 165, 92, 0.45);
+  color: #f6b071;
+}
+
+.tinyButton--text:hover {
+  background: rgba(246, 165, 92, 0.3);
+  color: #ffd0a1;
+}
+
+/* 工作台拉手：贴屏幕左边缘的淡橙色竖标签，永远可点（收起后也能再拉起来） */
+.dockTab {
+  position: fixed;
+  left: 0;
+  top: 50%;
+  z-index: 46;
+  transform: translateY(-50%);
+  padding: 12px 6px;
+  border: none;
+  border-radius: 0 10px 10px 0;
+  background: rgba(246, 165, 92, 0.9);
+  color: #2a1a08;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 2px;
+  writing-mode: vertical-rl;
+  text-orientation: upright;
+  cursor: pointer;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.4);
+}
+
+.dockTab:hover {
+  background: #ffb974;
+}
+
+/* 手机 / 平板竖屏：工作台铺满，顶部菜单交给悬浮球。
+   栅格保持两列（侧栏能自己收窄）；把列改成 1fr 会让侧栏和对话变成上下两行。 */
+@media (max-width: 820px) {
+  /* 小屏上工作台不再是整屏抽屉，而是从顶部往下展开的一块面板（72vh）：
+     手机上整屏会盖住会话，看起来像「一打开就在工作台」；向下展开能同时看到对话。 */
+  .dock {
+    top: 0;
+    right: 0;
+    left: 0;
+    width: 100% !important;
+    max-width: none;
+    height: 72vh;
+    max-height: 72vh;
+    border-left: none;
+    border-radius: 0 0 16px 16px;
+    box-shadow: 0 18px 40px rgba(0, 0, 0, 0.45);
+    z-index: 52;
+  }
+
+  .dockGrip {
+    display: none;
+  }
+
+  /* 小屏也必须留着这个入口：否则在「轨迹 / Git」页收起后就再也打不开工作台。
+     位置再往下一点、宽度再窄一点，避免和输入区的菜单/发送按钮叠在一起。 */
+  .dockRail {
+    display: flex;
+    top: 56%;
+    width: 30px;
+    height: 76px;
+    font-size: 11.5px;
+    letter-spacing: 0.02em;
+    border-radius: 10px 0 0 10px;
+  }
+
+  .dockTab {
+    z-index: 53;
+  }
+}
+
+/* 工作台拉手改成橙色，和悬浮球、文件路径按钮同一套提示色 */
+.dockRail {
+  background: #f6a55c;
+  color: #2a1a08;
+  border-color: #f6a55c;
+  font-weight: 600;
+}
+
+.dockRail:hover {
+  background: #ffb974;
+  color: #2a1a08;
+}
+
+/* 模型名可能很长（workbuddy-default / OpenCode 免费 里的组合名）。
+   和顶栏路径一样：给它一个可收缩的上界，超出用省略号，不能把推理强度挤出去。 */
+.composer__modelText {
+  display: inline-block;
+  max-width: min(300px, 40vw);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: bottom;
+}
+
+/* 移动端点击标签有延迟的常见原因不是渲染慢，而是浏览器在等「是不是双击缩放」。
+   manipulation 明确告诉它只做平移与捏合，单击立即生效。 */
+html {
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* ══ 移动端（≤820px）：顶栏三行 + 输入框三行 ══════════════════════════
+   桌面上 .topBar__row 用 display:contents 折回一行，小屏再恢复成真实的三行；
+   之前几轮追加的碎片规则已全部删除，这里是唯一一处移动端排版定义。 */
+.topBar__row {
+  display: contents;
+}
+
+@media (max-width: 820px) {
+  .topBar {
+    flex-direction: column;
+    flex-wrap: nowrap;
+    align-items: stretch;
+    /* 桌面版是固定 48px；三行内容若沿用这个高度会溢出压到对话上。 */
+    height: auto;
+    gap: 8px;
+    padding: 8px 12px 10px;
+  }
+
+  .topBar__row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+    width: 100%;
+  }
+
+  /* 第一行：菜单按钮 / 居中标题 / 版本号 */
+  .topBar__row--title .topBar__brand {
+    flex: 1 1 auto;
+    min-width: 0;
+    padding: 0;
+    overflow: hidden;
+    text-align: center;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: #fff;
+    font-size: 17px;
+    letter-spacing: 0.04em;
+  }
+
+  .topBar__version {
+    flex: none;
+    color: var(--dsw-alias-label-tertiary);
+    font-size: 12px;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .topBar .iconButton {
+    flex: none;
+  }
+
+  /* 第二行：文件路径（过长就省略） + 技能 + 状态 */
+  .topBar__row--meta .topBar__title {
+    flex: 1 1 auto;
+    min-width: 0;
+    max-width: 100%;
+    overflow: hidden;
+    text-align: left;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .topBar__row--meta .chip {
+    flex: none;
+  }
+
+  /* 第三行：对话 / 轨迹 / Git + 右侧橙色菜单键 */
+  .topBar__row--tabs .tabs {
+    flex: 1 1 auto;
+    width: auto;
+    min-width: 0;
+    justify-content: flex-start;
+    gap: 4px;
+    padding: 3px 0;
+  }
+
+  .topBar__row--tabs .tab {
+    flex: 0 0 auto;
+    min-height: 32px;
+    padding: 0 14px;
+    font-size: 13.5px;
+  }
+
+  .fab--inline {
+    position: static;
+    margin-left: auto;
+  }
+
+  .fab--inline .fab__ball {
+    width: 40px;
+    height: 40px;
+    font-size: 17px;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.35);
+  }
+
+  /* 输入框：第一行输入区（模板里本来就在上面）、第二行操作、第三行推理与模型。 */
+  .composer__row {
+    display: grid;
+    grid-template-columns: auto auto 1fr auto;
+    align-items: center;
+    gap: 8px;
+    padding: 2px 10px 8px;
+  }
+
+  .composer__tools,
+  .composer__trailing {
+    display: contents;
+  }
+
+  .composer__add,
+  .composer__file {
+    grid-area: 1 / 1;
+    justify-self: start;
+  }
+
+  .composer__voice {
+    grid-area: 1 / 2;
+    justify-self: start;
+  }
+
+  .composer__tools > .pop {
+    grid-area: 1 / 3;
+    justify-self: start;
+  }
+
+  .composer__send,
+  .composer__stop {
+    grid-area: 1 / 4;
+    justify-self: end;
+    transform: none;
+  }
+
+  .composer__trailing > .pop:nth-of-type(1) {
+    grid-area: 2 / 1 / auto / span 2;
+    justify-self: start;
+  }
+
+  .composer__trailing > .pop:nth-of-type(2) {
+    grid-area: 2 / 3 / auto / span 2;
+    justify-self: end;
+  }
+
+  .composer__select {
+    min-width: 0;
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .composer__hint {
+    padding: 0 12px;
+    text-align: center;
+  }
 }

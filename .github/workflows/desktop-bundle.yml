@@ -1,0 +1,69 @@
+name: desktop-bundle
+
+# Guards the packaging contract that a 0.2.x release broke: the shell looked for its sidecar in
+# `<exe>/sidecar` while `bundle.resources` installs it to `<exe>/resources/sidecar`. The build passed,
+# the app launched on the build machine (a compile-time checkout path covered for it), and then died
+# silently on every other computer. The layout assertion is therefore part of the build, not a
+# manual step after it: `pnpm --dir packages/desktop build` already runs `verify:bundle` locally,
+# and this job runs the same assertion on a clean runner with no checkout paths to hide behind.
+#
+# Inert until this repository is mirrored to GitHub: publishing currently goes through
+# `publish-gitee-release.ps1`, which uploads an installer built here by `pnpm build`.
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'desktop-v*'
+      - 'v*'
+
+jobs:
+  bundle:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: packages/desktop/src-tauri
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build the web UI
+        run: pnpm --dir packages/web build
+
+      # The Claude Code CLI is 231 MB and licensed separately, so CI stages everything else and
+      # proves the layout with the same sidecar directory a real release ships.
+      - name: Stage the sidecar
+        env:
+          CCCN_SKIP_CLAUDE: '1'
+        run: pnpm --dir packages/desktop prepare:sidecar
+
+      - name: Build the installers
+        run: pnpm --dir packages/desktop exec tauri build
+
+      # Fails when `<exe>/resources/sidecar` is missing, when `--self-check` resolves any candidate
+      # other than `resource_dir/resources/sidecar`, or when the generated NSIS/WiX scripts install
+      # the runtime anywhere else.
+      - name: Assert the packaged layout
+        run: pnpm --dir packages/desktop verify:bundle
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ChinaClaude-installers
+          path: |
+            packages/desktop/src-tauri/target/release/bundle/nsis/*.exe
+            packages/desktop/src-tauri/target/release/bundle/msi/*.msi
+          if-no-files-found: error

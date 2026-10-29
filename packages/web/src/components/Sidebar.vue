@@ -100,7 +100,13 @@ function statusLabel(status: SessionView['status']): string {
     case 'failed':
       return '失败'
     default:
-      return '已结束'
+      /**
+       * 「已结束」是个误导性的说法：没有子进程在跑不代表记录没了。
+       *
+       * 事件已经按会话落盘，点一下就会接着上次继续，所以这里说的是「停着，可以继续」，
+       * 而不是宣布会话死亡。
+       */
+      return '未运行 · 可继续'
   }
 }
 

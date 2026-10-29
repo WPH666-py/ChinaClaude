@@ -1,0 +1,136 @@
+import { readFileSync, writeFileSync } from 'node:fs'
+
+function patch(file, pairs) {
+  let text = readFileSync(file, 'utf8').replace(/\r\n/g, '\n')
+  for (const [before, after] of pairs) {
+    if (!text.includes(before)) throw new Error(file + ' missing: ' + before.slice(0, 80))
+    text = text.replace(before, after)
+  }
+  writeFileSync(file, text, 'utf8')
+}
+
+/* 1) 服务端：预览 + 还原 */
+patch('packages/bridge/src/server.mjs', [
+  ["import { rollbackLastTurn } from './rollback.mjs'", "import { rollbackLastTurn } from './rollback.mjs'\nimport { previewTurnFiles, restoreTurnFiles } from './turns.mjs'"],
+  [
+    '      // ---- 工作台 (workbench port) ---------------------------------------------',
+    [
+      "      /**",
+      "       * 撤回前先问「会动哪些文件」：这条消息之后工具改过的东西，还原前必须让用户看见。",
+      "       * 时间戳来自事件里的 at —— 会话记录和快照目录各自编号，只有时间在两边都稳定。",
+      "       */",
+      "      if (url.pathname === '/api/rollback/preview') {",
+      '        if (!gate.loopback) {',
+      "          sendJson(res, 403, { ok: false, error: '只有电脑端可以回滚会话' })",
+      '          return',
+      '        }',
+      '        const body = await readJsonBody(req)',
+      "        const session = sessions.get(String(body.sessionId ?? ''))",
+      '        if (!session) {',
+      "          sendJson(res, 404, { ok: false, error: 'session not found' })",
+      '          return',
+      '        }',
+      "        const wanted = String(body.text ?? '').trim()",
+      "        const event = [...session.history].reverse().find((item) => item.kind === 'user' && (item.text ?? '').trim() === wanted)",
+      '        if (!event) {',
+      "          sendJson(res, 200, { ok: false, error: '会话事件里找不到这条消息' })",
+      '          return',
+      '        }',
+      '        const preview = previewTurnFiles({ sessionId: session.id, since: event.at })',
+      '        sendJson(res, 200, { ...preview, since: event.at })',
+      '        return',
+      '      }',
+      '',
+      "      if (url.pathname === '/api/rollback/restore') {",
+      '        if (!gate.loopback) {',
+      "          sendJson(res, 403, { ok: false, error: '只有电脑端可以还原文件' })",
+      '          return',
+      '        }',
+      '        const body = await readJsonBody(req)',
+      '        sendJson(res, 200, restoreTurnFiles({ sessionId: body.sessionId, since: body.since, paths: body.paths }))',
+      '        return',
+      '      }',
+      '',
+      '      // ---- 工作台 (workbench port) ---------------------------------------------',
+    ].join('\n'),
+  ],
+])
+
+/* 2) 前端：撤回 → 预览 → 确认（列出文件）→ 截断 + 还原 */
+patch('packages/web/src/App.vue', [
+  [
+    '  const confirmed = window.confirm(\'撤回这条消息？它之后的问答会一起回滚。\')\n  if (!confirmed) return',
+    [
+      '  /**',
+      '   * 先问文件，再问对话。',
+      '   *',
+      '   * WHY ASK FILES FIRST: 用户点「撤回」通常想的是「把这一轮做过的事退回去」；如果只回退对话、',
+      '   * 留下改动过的文件，下一次请求就会在一个已经变了的世界里继续，这比不做更糟。',
+      '   */',
+      "  let restorePaths: string[] = []",
+      '  let since = 0',
+      '  try {',
+      "    const previewResponse = await fetch(`${bridge.baseUrl.value}/api/rollback/preview`, {",
+      "      method: 'POST',",
+      "      headers: { 'content-type': 'application/json' },",
+      '      body: JSON.stringify({ sessionId: id, text }),',
+      '    })',
+      '    const preview = (await previewResponse.json()) as {',
+      '      ok: boolean',
+      '      error?: string',
+      '      since?: number',
+      '      files?: Array<{ path: string; absolute: string; later: boolean; created: boolean; tooBig: boolean }>',
+      '    }',
+      '    if (!preview.ok) {',
+      '      startError.value = `撤回失败：${preview.error ?? \'无法读取这一轮的文件快照\'}`',
+      '      return',
+      '    }',
+      '    since = preview.since ?? 0',
+      '    const files = preview.files ?? []',
+      "    const laterFiles = files.filter((file) => file.later)",
+      '    if (files.length > 0) {',
+      "      const list = files.map((file) => `- ${file.path}${file.created ? '（本轮新建）' : ''}${file.tooBig ? '（过大，未快照）' : ''}`).join('\\n')",
+      "      const go = window.confirm(`撤回时会还原 ${files.length} 个文件：\\n\\n${list}\\n\\n继续？`)",
+      '      if (!go) return',
+      '      restorePaths = files.filter((file) => !file.tooBig).map((file) => file.absolute)',
+      '      if (laterFiles.length > 0) {',
+      "        const names = laterFiles.map((file) => `- ${file.path}`).join('\\n')",
+      '        const include = window.confirm(',
+      "          `其中 ${laterFiles.length} 个文件在之后的轮次里也被改过：\\n\\n${names}\\n\\n` +",
+      "            '确定 = 连同这些文件一起还原（之后的改动会丢失）；取消 = 跳过它们，只还原其余文件。',",
+      '        )',
+      '        if (!include) {',
+      '          const skip = new Set(laterFiles.map((file) => file.absolute))',
+      '          restorePaths = restorePaths.filter((path) => !skip.has(path))',
+      '        }',
+      '      }',
+      '    } else {',
+      "      const go = window.confirm('撤回这条消息？它之后的问答会一起回滚（这一轮没有改动文件）。')",
+      '      if (!go) return',
+      '    }',
+      '  } catch (problem) {',
+      '    startError.value = `撤回失败：${problem instanceof Error ? problem.message : String(problem)}`',
+      '    return',
+      '  }',
+    ].join('\n'),
+  ],
+  [
+    '    composerDraft.value = { text: answer.removedText ?? text, nonce: Date.now() }',
+    [
+      '    if (restorePaths.length > 0) {',
+      '      const restoreResponse = await fetch(`${bridge.baseUrl.value}/api/rollback/restore`, {',
+      "        method: 'POST',",
+      "        headers: { 'content-type': 'application/json' },",
+      '        body: JSON.stringify({ sessionId: id, since, paths: restorePaths }),',
+      '      })',
+      '      const restored = (await restoreResponse.json()) as { ok: boolean; restored?: unknown[]; skipped?: Array<{ path: string; reason: string }> }',
+      '      if ((restored.skipped ?? []).length > 0) {',
+      "        startError.value = `有 ${restored.skipped.length} 个文件没还原：${restored.skipped.map((item) => `${item.path}（${item.reason}）`).join('；')}`",
+      '      }',
+      '    }',
+      '    composerDraft.value = { text: answer.removedText ?? text, nonce: Date.now() }',
+    ].join('\n'),
+  ],
+])
+
+console.log('file restore wired')

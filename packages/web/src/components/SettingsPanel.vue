@@ -13,6 +13,8 @@ import type { Catalog, TranscriptSummary } from '../types'
 import { useSettings, PERMISSION_PRESETS, PERMISSION_CONFIRM } from '../composables/useSettings'
 import type { Bridge } from '../composables/useBridge'
 import BundledPanel from './BundledPanel.vue'
+import PluginManagerPanel from './PluginManagerPanel.vue'
+import CostPanel from './CostPanel.vue'
 import ImportPanel from './ImportPanel.vue'
 import AuditPanel from './AuditPanel.vue'
 import RemotePanel from './RemotePanel.vue'
@@ -54,9 +56,181 @@ const emit = defineEmits<{
   (e: 'new-session'): void
   /** Reopen a past conversation from disk as a live, resumable session. */
   (e: 'open-transcript', transcript: TranscriptSummary): void
+  /** 导入完成后让外壳把桥上的新服务商并进本地列表（否则下拉要重启才更新）。 */
+  (e: 'models-changed'): void
 }>()
 
 const store = useSettings()
+
+/**
+ * 一键导入：把本机已有凭据（Trae CLI / WorkBuddy CLI / opencode Key）变成模型列表里的一行。
+ *
+ * WHY HERE AND NOT IN THE CONNECTOR PANEL: this is the page where a user looks when they want models.
+ * Requiring them to know that the same action lives under 插件管理→连接器 would be a treasure hunt.
+ */
+const importKey = ref('')
+const importBusy = ref(false)
+const importNotice = ref('')
+
+/** Same three-step resolution the other fetch-owning panels use. */
+function importBaseUrl(): string {
+  const injected = (globalThis as Record<string, unknown>).__CCCN_BRIDGE_URL__
+  if (typeof injected === 'string' && injected.length > 0) return injected.replace(/\/$/, '')
+  const param = new URLSearchParams(location.search).get('bridge')
+  if (param) return param.replace(/\/$/, '')
+  return import.meta.env.DEV ? '' : 'http://127.0.0.1:43130'
+}
+
+/** 从 provider 的 Base URL 反推它来自哪个来源；不是导入来的服务商返回 null。 */
+type ImportSource = 'workbuddy' | 'codebuddy' | 'opencode'
+function sourceOf(provider: { baseUrl?: string }): ImportSource | null {
+  const url = String(provider.baseUrl ?? '')
+  if (url.includes('/proxy/workbuddy-cn')) return 'codebuddy'
+  if (url.includes('/proxy/workbuddy')) return 'workbuddy'
+  if (url.includes('/proxy/opencode-free')) return 'opencode'
+  return null
+}
+
+/** 卡片上的「刷新」：对同一来源再导入一次（已存在则不重复）。 */
+async function refreshProvider(provider: { baseUrl?: string; apiKey?: string }) {
+  const source = sourceOf(provider)
+  if (!source) return
+  importKey.value = provider.apiKey ?? importKey.value
+  await importModels(source)
+}
+
+/** 卡片上的「登录」：拉起对应 CLI 的登录窗口。 */
+async function loginProvider(provider: { baseUrl?: string }) {
+  const source = sourceOf(provider)
+  if (!source) return
+  // opencode 免费档不需要登录；CodeBuddy 与 WorkBuddy 共用同一个 CLI。
+  if (source === 'opencode') {
+    importNotice.value = '这个来源不需要登录：它直接调用随包的 opencode CLI。'
+    return
+  }
+  const path = '/api/connectors/cli/login'
+  try {
+    const response = await fetch(`${importBaseUrl()}${path}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' })
+    const answer = (await response.json()) as { ok: boolean; hint?: string; error?: string }
+    importNotice.value = answer.ok ? answer.hint ?? '已打开登录窗口' : answer.error ?? '无法打开登录窗口'
+  } catch (problem) {
+    importNotice.value = problem instanceof Error ? problem.message : String(problem)
+  }
+}
+
+/**
+ * 费用核算里的「预填」候选：按 Base URL 去重，并跳过代理来源。
+ *
+ * WHY SKIP /proxy/: 这些行是导入来的（WorkBuddy 一次就 31 个模型），既没有公开价目，又会被
+ * store 拆成「一模型一卡」，于是按钮会重复三十遍。价格本来就该用户自己填。
+ */
+const seedProviders = computed(() => {
+  const seen = new Set<string>()
+  return store.settings.value.providers.filter((provider) => {
+    const url = String(provider.baseUrl ?? '')
+    if (url === '' || url.includes('/proxy/') || seen.has(url)) return false
+    seen.add(url)
+    return true
+  })
+})
+
+/** 按 Base URL 分组的服务商视图：一个容器 + 它的模型子项。 */
+const providerGroups = computed(() => {
+  const groups = new Map<string, { name: string; baseUrl: string; models: { id: string; model: string; label: string }[]; isDefault: boolean; source: ImportSource | null; providers: typeof store.settings.value.providers }>()
+  for (const provider of store.settings.value.providers) {
+    const url = String(provider.baseUrl ?? '')
+    if (url === '') continue
+    const existing = groups.get(url)
+    const models = (provider.models ?? []).map((model) => ({ id: model.id, model: model.model, label: model.label ?? model.model }))
+    if (existing) {
+      const seen = new Set(existing.models.map((model) => model.model))
+      for (const model of models) if (!seen.has(model.model)) { existing.models.push(model); seen.add(model.model) }
+      existing.isDefault ||= Boolean(provider.isDefault)
+      existing.providers.push(provider)
+      continue
+    }
+    groups.set(url, {
+      name: provider.name.split(' · ')[0] || provider.name,
+      baseUrl: url,
+      models,
+      isDefault: Boolean(provider.isDefault),
+      source: sourceOf(provider),
+      providers: [provider],
+    })
+  }
+  return [...groups.values()]
+})
+
+async function refreshGroup(group: { baseUrl: string; source: ImportSource | null }) {
+  if (!group.source) return
+  await importModels(group.source === 'codebuddy' ? 'codebuddy' : group.source === 'workbuddy' ? 'workbuddy' : 'opencode-free')
+}
+
+async function loginGroup(group: { baseUrl: string; source: ImportSource | null }) {
+  if (!group.source) return
+  await loginProvider({ baseUrl: group.baseUrl })
+}
+
+function removeGroup(group: { providers: Array<{ id: string }>; baseUrl: string }) {
+  for (const provider of group.providers) store.removeProvider(provider.id)
+  /**
+   * 桥那边也要删：发布现在是合并语义，本地删掉不会传过去，否则下次启动又被合并回来。
+   * 失败就算了 —— 本地已经不可见，下次启动最多再出现一次，用户可以再删。
+   */
+  void fetch(`${importBaseUrl()}/api/models/remove`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ baseUrl: group.baseUrl }),
+  }).catch(() => {})
+}
+const importBase = ref('http://127.0.0.1:18900')
+
+async function importModels(source: 'trae' | 'workbuddy' | 'opencode' | 'kimi' | 'free-model' | 'opencode-free' | 'codebuddy') {
+  importBusy.value = true
+  importNotice.value = ''
+  try {
+    const response = await fetch(`${importBaseUrl()}/api/models/import`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ source, apiKey: importKey.value.trim(), baseUrl: importBase.value.trim() }),
+    })
+    const answer = (await response.json()) as { ok: boolean; added?: string[]; rows?: { name: string; baseUrl: string; apiKey: string; provider?: string }[]; error?: string; loggedIn?: boolean | null }
+    if (!answer.ok) {
+      importNotice.value = answer.error ?? '导入失败'
+      return
+    }
+    const added = answer.added ?? []
+    /**
+     * 修历史数据：更早导入的服务商只有 baseUrl、`models` 是空的，而模型选择器只认 model 条目。
+     * 这些行在服务器侧已存在（added 为空），所以这里就地补一条，避免用户必须删掉重导。
+     */
+    for (const provider of store.settings.value.providers) {
+      const isImported = String(provider.baseUrl ?? '').includes('/proxy/')
+      if (isImported && provider.models.length === 0) {
+        const model = sourceOf(provider) ? `${sourceOf(provider)}-default` : provider.name
+        provider.models.push({ id: crypto.randomUUID(), model, label: model })
+      }
+    }
+    const loginNote = answer.loggedIn === false ? '（CLI 还没登录，首次对话前要先点登录）' : ''
+    importNotice.value = added.length > 0 ? `已导入：${added.join('、')}${loginNote}` : `列表里已经有这个来源的模型了${loginNote}`
+    emit('models-changed')
+    // 直接把新行放进本地列表：hydrateFromBridge 只在列表为空时生效，用它刷新不到这里。
+    for (const row of answer.rows ?? []) {
+      store.settings.value.providers.push({
+        id: crypto.randomUUID(),
+        name: row.provider ? `${row.provider} · ${row.name}` : row.name,
+        baseUrl: row.baseUrl,
+        apiKey: row.apiKey,
+        persistKey: false,
+        models: [{ id: crypto.randomUUID(), model: row.name, label: row.name }],
+      })
+    }
+  } catch (problem) {
+    importNotice.value = problem instanceof Error ? problem.message : String(problem)
+  } finally {
+    importBusy.value = false
+  }
+}
 const { DEFAULT_BASE_URL } = store
 
 /**
@@ -66,7 +240,7 @@ const { DEFAULT_BASE_URL } = store
  * outcome: a silent no-op reads as a broken app rather than as "no session is selected".
  */
 const hasActiveSession = computed(() => Boolean(props.sessionPermissionMode !== null && props.sessionPermissionMode !== undefined))
-const section = ref<'general' | 'permission' | 'models' | 'pricing' | 'bundled' | 'import' | 'audit' | 'remote' | 'about'>('general')
+const section = ref<'general' | 'permission' | 'models' | 'pricing' | 'bundled' | 'plugins' | 'import' | 'audit' | 'remote' | 'about'>('general')
 
 /**
  * Which configured provider a rate row appears to describe, for a "prefilled from X" hint.
@@ -360,8 +534,8 @@ function removeSaved(providerId: string) {
           <button class="st__railItem" :class="{ 'st__railItem--on': section === 'pricing' }" type="button" @click="section = 'pricing'">
             费用核算
           </button>
-          <button class="st__railItem" :class="{ 'st__railItem--on': section === 'bundled' }" type="button" @click="section = 'bundled'">
-            内置插件
+          <button class="st__railItem" :class="{ 'st__railItem--on': section === 'plugins' }" type="button" @click="section = 'plugins'">
+            插件管理
           </button>
           <button class="st__railItem" :class="{ 'st__railItem--on': section === 'import' }" type="button" @click="section = 'import'">
             导入会话
@@ -500,6 +674,21 @@ function removeSaved(providerId: string) {
               </button>
             </div>
 
+            <!-- 一键导入：只留三种来源。其余入口（Kimi / our-free-model / 手填 Key）已删 —— 点进去必然失败的路不该占位置。 -->
+            <div class="st__importList">
+              <span class="st__importLabel">从本机导入</span>
+              <button class="st__ghost" type="button" :disabled="importBusy" @click="importModels('workbuddy')">
+                从 WorkBuddy 导入模型
+              </button>
+              <button class="st__ghost" type="button" :disabled="importBusy" @click="importModels('opencode-free')">
+                从 opencode 导入模型（免费，无需登录）
+              </button>
+              <button class="st__ghost" type="button" :disabled="importBusy" @click="importModels('codebuddy')">
+                从 CodeBuddy 导入模型（国内版）
+              </button>
+            </div>
+            <p v-if="importNotice" class="st__sub" style="margin-top: 6px">{{ importNotice }}</p>
+
             <!--
               The draft: the ONLY editable card, and the only way one is created. Four fields, three
               buttons, nothing else.
@@ -577,17 +766,30 @@ function removeSaved(providerId: string) {
               Saved cards are read-only, with 删除 as the only action. Everything a saved card needs to
               say is here: which platform, which model, and which endpoint it will be reached through.
             -->
-            <div v-for="provider in store.settings.value.providers" :key="provider.id" class="st__provider">
+            <!-- 按服务商分组：一个容器 + 它下面的模型子项，而不是每个模型一张卡 -->
+            <div v-for="group in providerGroups" :key="group.baseUrl" class="st__provider">
               <div class="st__providerHead">
-                <span v-if="provider.isDefault" class="st__chipTag">默认</span>
-                <span class="st__providerName">{{ provider.name }}</span>
-                <code class="st__modelId">{{ provider.models[0]?.model }}</code>
+                <span v-if="group.isDefault" class="st__chipTag">默认</span>
+                <span class="st__providerName">{{ group.name }}</span>
+                <span class="st__chipTag">{{ group.models.length }} 个模型</span>
                 <span class="st__spacer" />
-                <button class="st__link st__link--danger" type="button" @click="removeSaved(provider.id)">
-                  删除
+                <button v-if="group.source" class="st__act" type="button" :disabled="importBusy" @click="refreshGroup(group)">刷新</button>
+                <!-- 三个来源都保留同一组按钮：opencode 点「登录」会说明它不需要登录，而不是把按钮藏起来。 -->
+                <button
+                  v-if="group.source"
+                  class="st__act"
+                  type="button"
+                  :disabled="importBusy"
+                  @click="loginGroup(group)"
+                >
+                  登录
                 </button>
+                <button class="st__act st__act--danger" type="button" @click="removeGroup(group)">删除</button>
               </div>
-              <code class="st__providerUrl">{{ provider.baseUrl }}</code>
+              <code class="st__providerUrl">{{ group.baseUrl }}</code>
+              <div class="st__modelList">
+                <span v-for="model in group.models" :key="model.model" class="st__chipTag">{{ model.label || model.model }}</span>
+              </div>
             </div>
 
             <!--
@@ -636,7 +838,14 @@ function removeSaved(providerId: string) {
 
           <!-- cost accounting rates for vendors the built-in table does not cover -->
           <template v-else-if="section === 'pricing'">
-            <h3 class="st__h">费用核算</h3>
+            <!-- 费用统计整页搬进来：会话数 / 合计 / 计价模型数 / 计价依据，和独立窗口一模一样。 -->
+            <CostPanel
+              inline
+              :sessions="bridge.sessions.value"
+              :active-id="bridge.activeSessionId.value"
+              @close="() => {}"
+            />
+            <h3 class="st__h">单价与价目表</h3>
             <p class="st__sub">
               侧栏的「费用」需要一个价目表才能算。内置的只有 DeepSeek 一家；接到其他厂商
               （通义千问 / 智谱 / Kimi / 阶跃星辰 / 讯飞星火 …）时，在这里填上你自己的单价即可生效。
@@ -713,8 +922,8 @@ function removeSaved(providerId: string) {
                   添加一行
                 </button>
                 <button
-                  v-for="provider in store.settings.value.providers"
-                  :key="provider.id"
+                  v-for="provider in seedProviders"
+                  :key="provider.baseUrl"
                   class="st__ghost"
                   type="button"
                   :title="`用 ${provider.name} 的第一个模型名预填匹配前缀`"
@@ -756,6 +965,24 @@ function removeSaved(providerId: string) {
             :loaded-plugins="loadedPlugins"
             :loaded-mcp-servers="loadedMcpServers"
           />
+
+          <!--
+            插件管理 = 原先两个页面的合并：上面是「哪些能力可用、点开去哪」，下面是「内置包与技能」清单。
+            WHY ONE PAGE: 分成两页时，同一件事（我有什么能力）要在两个地方各看一半，用户找不到。
+          -->
+          <div v-else-if="section === 'plugins'" class="st__pluginsPage">
+            <PluginManagerPanel inline :cwd="null" @close="() => {}" />
+
+            <section class="st__bundledBlock">
+              <h3 class="st__bundledTitle">内置包与技能</h3>
+              <BundledPanel
+                :catalog="catalog"
+                :loaded-skills="loadedSkills"
+                :loaded-plugins="loadedPlugins"
+                :loaded-mcp-servers="loadedMcpServers"
+              />
+            </section>
+          </div>
 
           <!-- existing Claude Code conversations -->
           <ImportPanel
@@ -1255,6 +1482,48 @@ function removeSaved(providerId: string) {
   color: var(--dsw-alias-label-caption);
   font-size: 12.5px;
   text-align: center;
+}
+
+.st__pluginsPage {
+  display: grid;
+  gap: 18px;
+}
+
+.st__bundledBlock {
+  padding-top: 14px;
+  border-top: 0.5px solid var(--dsw-alias-border-l1);
+}
+
+.st__bundledTitle {
+  margin: 0 0 10px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.st__act {
+  padding: 2px 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(246, 165, 92, 0.55);
+  background: rgba(246, 165, 92, 0.16);
+  color: #ffc38a;
+  font-size: 12px;
+  line-height: 18px;
+  cursor: pointer;
+}
+
+.st__act:hover {
+  background: rgba(246, 165, 92, 0.3);
+}
+
+.st__act:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.st__act--danger {
+  border-color: rgba(255, 128, 110, 0.55);
+  background: rgba(255, 128, 110, 0.14);
+  color: #ff9f8c;
 }
 
 .st__providerHead {

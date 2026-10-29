@@ -6,10 +6,11 @@
   "description": "Tauri shell: owns the Node bridge sidecar and the webview that renders the Vue UI.",
   "scripts": {
     "dev": "tauri dev",
-    "build": "pnpm prepare:sidecar && tauri build",
+    "build": "pnpm prepare:sidecar && tauri build && pnpm verify:bundle",
     "build:web": "pnpm --dir ../web build",
     "tauri": "tauri",
-    "prepare:sidecar": "node scripts/prepare-sidecar.mjs"
+    "prepare:sidecar": "node scripts/prepare-sidecar.mjs",
+    "verify:bundle": "node scripts/verify-bundle.mjs"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.2.0"

@@ -465,7 +465,8 @@ onMounted(() => {
 
 .vp__row {
   display: flex;
-  align-items: center;
+  flex-direction: column;
+  align-items: stretch;
   gap: 8px;
 }
 

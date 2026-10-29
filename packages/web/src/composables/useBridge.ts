@@ -4,7 +4,7 @@
  * Transport is plain fetch + EventSource-style SSE reading over fetch, so the same code
  * works under `vite dev` (proxy) and inside the Tauri webview (direct 127.0.0.1).
  */
-import { ref, shallowRef, computed } from 'vue'
+import { ref, shallowRef, computed, watch } from 'vue'
 import type {
   BridgeEvent,
   BundledInventory,
@@ -24,6 +24,17 @@ import type {
 } from '../types'
 // Type-only: erased at compile time, so this does not create a runtime cycle with the settings store.
 import type { Provider } from './useSettings'
+
+/**
+ * `/api/state` 的返回：桥级的“当前会话”加上会话列表。
+ *
+ * 列表字段与 `GET /api/sessions` 相同；这里声明成可选是因为订阅帧只带 `activeSessionId`，
+ * 两个接口共用同一个解析路径。
+ */
+interface BridgeState {
+  activeSessionId: string | null
+  sessions?: SessionView[]
+}
 
 /**
  * A stable fingerprint of every field the UI derives from a session.
@@ -74,6 +85,18 @@ export function useBridge() {
   let streamAbort: AbortController | null = null
   let retryTimer: number | null = null
   let pollTimer: number | null = null
+
+  /**
+   * 桥声明的“当前会话”，只用于判断另一端的切换，不参与渲染。
+   *
+   * 渲染永远看 `activeSessionId`；保留这个镜像便于在“本地不采纳”时记录差异，也避免把
+   * 广播回来的自己刚做过的切换当成一次远端操作。
+   */
+  const remoteActiveSessionId = ref<string | null>(null)
+
+  /** `/api/state/events` 的长连接；EventSource 自带断线重连，这里只负责在 baseUrl 变化时重建。 */
+  let stateSource: EventSource | null = null
+  let stateRetryTimer: number | null = null
 
   const activeSession = computed(() => sessions.value.find((s) => s.id === activeSessionId.value) ?? null)
 
@@ -307,6 +330,21 @@ export function useBridge() {
                 }
               }
 
+              if (event.kind === 'user') {
+                /*
+                 * 去重：`send()` 先在本地画了一个「立刻可见」的气泡（localEcho），
+                 * 桥随后会把同一条用户事件从流里推回来。找到那个占位气泡就地替换，
+                 * 否则同一句话会出现两次。
+                 */
+                const echo = events.value.findIndex(
+                  (item) => (item as { localEcho?: boolean }).localEcho === true && item.kind === 'user' && item.text === event.text,
+                )
+                if (echo >= 0) {
+                  events.value.splice(echo, 1, event)
+                  continue
+                }
+              }
+
               events.value.push(event)
               // A closed session ends the stream server-side; reflect it in the list.
               if (event.kind === 'closed') void refreshSessions()
@@ -385,6 +423,105 @@ export function useBridge() {
   }
 
   /**
+   * 页面打开时向桥对齐一次“当前会话”。
+   *
+   * 只做单向采纳：本地没有选中会话（手机第一次打开就是这种状态）→ 采纳桥上正在看的会话并
+   * attach；本地已经选了别的会话 → 记录差异但不切换，避免两端互相把对方拽走。之后每一次
+   * 变化由 `connectStateStream` 的订阅处理（那边有“正在跑 turn 就不切换”的保护）。
+   */
+  async function syncActiveSession() {
+    try {
+      const state = await api<BridgeState>('/api/state')
+      remoteActiveSessionId.value = state.activeSessionId
+      if (!activeSessionId.value && state.activeSessionId) {
+        await openSession(state.activeSessionId)
+      }
+    } catch (error) {
+      lastError.value = String((error as Error).message ?? error)
+    }
+  }
+
+  /** 关掉 state 订阅并取消待执行的重建（卸载、或 baseUrl 改变前调用）。 */
+  function closeStateStream() {
+    if (stateRetryTimer !== null) {
+      window.clearTimeout(stateRetryTimer)
+      stateRetryTimer = null
+    }
+    stateSource?.close()
+    stateSource = null
+  }
+
+  /**
+   * 订阅桥上的“当前会话”，让桌面端与手机端共享同一个选择。
+   *
+   * 用浏览器自带 EventSource：断线重连是它的默认行为，桥重启后无需额外代码；只有 baseUrl
+   * 变了才必须重建（见 setBaseUrl）。收到一帧时的策略：
+   * - 本地没有选会话 → 采纳并 attach（手机打开时走这条）；
+   * - 本地有、且另一端切到别的会话 → 也采纳（这就是“共享当前会话”的语义），但本地正在
+   *   跑 turn 时跳过，等下一帧再试，免得正在回答的会话从屏幕上被撤走；
+   * - 桥清空指针（例如另一端点删除了会话）→ 只记录，不追着关闭本地会话：桥重启时指针也
+   *   是 null，若据此清空会把用户正在看的会话误关掉。
+   *
+   * 采纳远端切换时只改本地，绝不 POST 回 `/api/state/active`，否则两端会互相回推形成回环。
+   */
+  function connectStateStream() {
+    closeStateStream()
+    const source = new EventSource(`${baseUrl.value}/api/state/events`)
+    stateSource = source
+    source.addEventListener('state', (message) => {
+      let payload: BridgeState | null = null
+      try {
+        payload = JSON.parse((message as MessageEvent).data) as BridgeState
+      } catch {
+        return
+      }
+      const next = typeof payload?.activeSessionId === 'string' ? payload.activeSessionId : null
+      remoteActiveSessionId.value = next
+      const current = activeSessionId.value
+      if (!next) return
+      if (current === next) return
+      if (!current) {
+        void openSession(next)
+        return
+      }
+      /**
+       * 需求写的是 `status !== 'running'`，但本项目的会话状态里没有 'running'：一轮正在跑
+       * 由 'busy' / 'awaiting_approval' 表示（见 isBusy），这里用 isBusy 表达同一语义。
+       */
+      if (isBusy.value) return
+      void openSession(next)
+    })
+    source.onerror = () => {
+      // EventSource 自己会重连；只有它彻底 CLOSED（如鉴权失败）时才重建，避免永不停歇的忙等。
+      if (source.readyState === EventSource.CLOSED) {
+        stateRetryTimer = window.setTimeout(() => {
+          stateRetryTimer = null
+          connectStateStream()
+        }, 3000)
+      }
+    }
+  }
+
+  /**
+   * 用户主动选中会话：先告诉桥，再在本地打开。
+   *
+   * 先 POST 是为了让另一端（桌面/手机）收到 state 事件跟过来；上报失败不阻塞本地打开：
+   * 旧桥没有这个接口时，用户点一下仍然应该看到会话，只是另一端不会同步。
+   */
+  async function selectSessionRemote(sessionId: string) {
+    try {
+      await api<BridgeState>('/api/state/active', {
+        method: 'POST',
+        body: JSON.stringify({ sessionId }),
+      })
+      remoteActiveSessionId.value = sessionId
+    } catch (error) {
+      lastError.value = String((error as Error).message ?? error)
+    }
+    await openSession(sessionId)
+  }
+
+  /**
    * Send one turn of user input, and bring the local checks' verdict back with it.
    *
    * WHY THIS DOES NOT GO THROUGH `api()`: the send path has a NORMAL non-2xx — when 规则引擎 or
@@ -414,6 +551,22 @@ export function useBridge() {
     }
     if (!response.ok || payload?.accepted !== true) {
       return { sent: false, error: payload?.error ?? `${response.status} ${response.statusText}` }
+    }
+    /*
+     * 立刻回显这句话。
+     *
+     * WHY: 真正的用户事件是桥通过 SSE 推回来的，中间要经过一次重启/重放（切换模型、恢复上下文），
+     * 那段时间界面上一片空白，用户会以为「点了发送但没发出去」。本地先画一条，等桥的同一条到了
+     * 再就地替换（见 attach 里的 localEcho 去重）。
+     */
+    if (activeSessionId.value) {
+      events.value.push({
+        sessionId: activeSessionId.value,
+        kind: 'user',
+        text,
+        at: Date.now(),
+        localEcho: true,
+      } as unknown as BridgeEvent)
     }
     return { sent: true, rules: payload.rules ?? [], appended: payload.appended ?? null }
   }
@@ -473,25 +626,33 @@ export function useBridge() {
     sessionId = activeSessionId.value,
   ) {
     if (!sessionId) throw new Error('no active session')
-    const result = await api<{ ok: boolean; mode: 'in-session' | 'restarted' }>(
-      `/api/sessions/${sessionId}/model`,
-      {
-        method: 'POST',
-        body: JSON.stringify({ model, baseUrl: options.baseUrl, apiKey: options.apiKey, effort: options.effort }),
-      },
-    )
-    // A restart replaces the child process, so the event stream has to be re-attached and the
-    // catalog re-fetched; the in-session path only needs the catalog.
-    // The bridge restarts for an effort change too — that is not a control request either.
-    if (result.mode === 'restarted') {
-      events.value = []
-      attach(sessionId)
+    try {
+      const result = await api<{ ok: boolean; mode: 'in-session' | 'restarted' }>(
+        `/api/sessions/${sessionId}/model`,
+        {
+          method: 'POST',
+          body: JSON.stringify({ model, baseUrl: options.baseUrl, apiKey: options.apiKey, effort: options.effort }),
+        },
+      )
+      // A restart replaces the child process, so the event stream has to be re-attached and the
+      // catalog re-fetched; the in-session path only needs the catalog.
+      // The bridge restarts for an effort change too — that is not a control request either.
+      if (result.mode === 'restarted') {
+        // 不清空：桥保留了事件历史，attach 会带 last-event-id 只补增量；清空会让切模型看起来像新会话。
+        attach(sessionId)
+      }
+      await refreshSessions()
+      // A restart tears the child down and re-runs the initialize handshake, so the catalog has to
+      // be waited for again rather than read from the reply of the process that just died.
+      void refreshCatalogWhenReady(sessionId)
+      return result
+    } catch (error) {
+      if (String((error as Error).message).startsWith('409')) {
+        // 本轮还没结束。界面上这两个按钮此时是锁住的，这里再兜一层，给出可执行的指引。
+        throw new Error('本轮执行中：先点「中断」，再切换模型或推理档位')
+      }
+      throw error
     }
-    await refreshSessions()
-    // A restart tears the child down and re-runs the initialize handshake, so the catalog has to
-    // be waited for again rather than read from the reply of the process that just died.
-    void refreshCatalogWhenReady(sessionId)
-    return result
   }
 
   /**
@@ -826,6 +987,12 @@ export function useBridge() {
     stopSessionPolling()
   }
 
+  /** 页面卸载：除了会话流/轮询，还要断开桥级 state 订阅。 */
+  function dispose() {
+    detach()
+    closeStateStream()
+  }
+
   return {
     baseUrl,
     health,
@@ -886,8 +1053,17 @@ export function useBridge() {
     setPermissionMode,
     setModel,
     detach,
+    dispose,
+    remoteActiveSessionId,
+    syncActiveSession,
+    connectStateStream,
+    selectSessionRemote,
     setBaseUrl(next: string) {
-      baseUrl.value = next.replace(/\/$/, '')
+      const normalized = next.replace(/\/$/, '')
+      if (normalized === baseUrl.value) return
+      baseUrl.value = normalized
+      // 桥地址变了：旧订阅指向另一台桥，必须重建；EventSource 自己不会跨 baseUrl 迁移。
+      if (stateSource) connectStateStream()
     },
   }
 }

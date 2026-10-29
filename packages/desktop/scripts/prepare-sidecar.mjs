@@ -114,11 +114,19 @@ mkdirSync(join(target, 'bridge'), { recursive: true })
 // --- bridge -------------------------------------------------------------------
 let staged = 0
 for (const entry of readdirSync(bridgeSrc)) {
+  const from = join(bridgeSrc, entry)
+  // 目录（vendor/ 这类内置的第三方实现）整体复制：只挑 .mjs 顶层文件会漏掉它们，
+  // 而漏掉的后果不是构建报错，而是装完启动时 ERR_MODULE_NOT_FOUND（自检会挡住）。
+  if (statSync(from).isDirectory()) {
+    cpSync(from, join(target, 'bridge', entry), { recursive: true })
+    staged++
+    continue
+  }
   if (!entry.endsWith('.mjs')) continue
-  copyFileSync(join(bridgeSrc, entry), join(target, 'bridge', entry))
+  copyFileSync(from, join(target, 'bridge', entry))
   staged++
 }
-log(`staged ${staged} bridge module(s)`)
+log(`staged ${staged} bridge module(s) and directories`)
 
 // A package.json with type:module keeps .mjs/ESM resolution unambiguous in the bundle.
 writeFileSync(
@@ -178,6 +186,63 @@ if (process.env.CCCN_SKIP_VET === '1') {
     const vetDest = join(target, 'vet')
     cpSync(vetSource, vetDest, { recursive: true })
     log(`staged audit engine (${dirSizeMB(vetDest)} MB)`)
+  }
+}
+
+// --- portable git -------------------------------------------------------------
+/**
+ * 便携版 git：让 Git 面板在没装 git 的机器上也能用。
+ *
+ * WHY IT IS OPTIONAL: the zip is ~40 MB and produced by a separate download step (see
+ * `vendor/git/README.md`); a build machine without it still ships, and the panel falls back to the
+ * system git (or the "装一个 git" hint) exactly as before.
+ */
+{
+  const gitSource = join(repoRoot, 'vendor', 'git')
+  const gitEntry = join(gitSource, 'cmd', 'git.exe')
+  if (!existsSync(gitEntry)) {
+    log('portable git not staged (vendor/git missing) — Git panel will use system git if present')
+  } else {
+    const gitDest = join(target, 'git')
+    rmSync(gitDest, { recursive: true, force: true })
+    cpSync(gitSource, gitDest, { recursive: true })
+    log(`staged portable git (${dirSizeMB(gitDest)} MB)`)
+  }
+}
+
+// --- opencode (free models) ---------------------------------------------------
+/**
+ * opencode CLI：免费模型只能由 OpenCode 客户端本身调用，所以把它随包携带，由桥以子进程方式驱动。
+ * 体积约 212 MB；缺失时只告警，不影响构建（Git 面板式的可选依赖）。
+ */
+{
+  const opencodeSource = join(repoRoot, 'vendor', 'opencode', 'opencode.exe')
+  if (!existsSync(opencodeSource)) {
+    log('opencode CLI not staged (vendor/opencode missing) — free-model route will report unavailable')
+  } else {
+    const opencodeDest = join(target, 'opencode')
+    mkdirSync(opencodeDest, { recursive: true })
+    copyFileSync(opencodeSource, join(opencodeDest, 'opencode.exe'))
+    log(`staged opencode CLI (${dirSizeMB(opencodeDest)} MB)`)
+  }
+}
+
+// --- our-free-model standalone service ---------------------------------------
+/**
+ * Our Free Model 的独立服务（MIT，见 vendor/ofm-runtime/ORIGIN.md）。
+ *
+ * 为什么随包而不是让用户装 DSH 插件：插件的「本地转发」开关只能由 DSH 自己的管理接口打开（外部
+ * 调用 401），改配置文件又不热加载，所以「点一下就导入」在插件那条路上做不到。这份运行时是纯
+ * Node ESM、无第三方依赖，桥用随包的 node 把它拉起来即可。缺失时只告警，导入会回落 DSH 探测。
+ */
+{
+  const ofmSource = join(repoRoot, 'vendor', 'ofm-runtime')
+  if (!existsSync(join(ofmSource, 'packages', 'standalone', 'cli.mjs'))) {
+    log('our-free-model runtime not staged (vendor/ofm-runtime missing) — import falls back to DSH')
+  } else {
+    const ofmDest = join(target, 'ofm')
+    cpSync(ofmSource, ofmDest, { recursive: true })
+    log(`staged our-free-model service (${dirSizeMB(ofmDest)} MB)`)
   }
 }
 

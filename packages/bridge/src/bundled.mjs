@@ -231,14 +231,183 @@ export const BUILTIN_PLUGINS = [
   {
     id: 'git-panel',
     name: '@xbzbing/dsh-git-panel',
-    version: '1.4.0',
-    summary: '代码管理面板：状态、差异、提交历史，改动一眼看清，不用切到终端。',
+    version: '1.8.2',
+    summary: '代码管理面板：状态、差异、暂存、分支、储藏、提交历史，改动一眼看清，不用切到终端。',
     port: {
       kind: 'native',
-      detail: '自建「代码管理」：调用本机 git 读状态/差异/历史；未装 git 时明确说明而不是假装可用。',
+      detail:
+        '自建「代码管理」：git 以 argv 数组调用（不经 shell），支持状态 / 差异 / 暂存与取消暂存 / 分支列表与切换 / 储藏（保存·应用·弹出·删除）/ 提交；丢弃改动与删除储藏需要二次确认。推送、拉取、reset、clean -fdx 刻意不实现。未装 git 或目录不是仓库时明确说明而不是假装可用。',
       evidence: 'bridge/gitpanel.mjs',
       endpoint: '/api/git',
       feature: 'git',
+    },
+  },
+  {
+    id: 'workbench',
+    name: 'dsh-workbench',
+    version: '0.16.1',
+    summary: '右侧工作台：工作区文件树、文件预览（文本 / Markdown / 图片）、全文搜索与变更审阅。',
+    port: {
+      kind: 'native',
+      detail:
+        '自建「工作台」：路径在工作区两侧做 realpath 收敛后才允许读写；tree / file / search / changes 四个端点与上游同名能力对应；变更审阅读 git，没有 git 时给一句话而不是空列表。不引入 CodeMirror，预览按纯文本渲染。',
+      evidence: 'bridge/workbench.mjs',
+      endpoint: '/api/workbench/tree',
+      feature: 'workbench',
+    },
+  },
+  {
+    id: 'opencode-go',
+    name: 'dsh-opencode-go',
+    version: '0.1.25-pre',
+    summary: 'OpenCode Go 网关：一把 Bearer Key 接入 DeepSeek / Qwen / MiniMax 等模型，按量计费。',
+    port: {
+      kind: 'native',
+      detail:
+        '自建「连接器」：上游自带 Anthropic 兼容路由（/inference/go/anthropic），因此能直接作为服务商给 claude.exe 用；模型目录与额度分别读 /v1/models 与 /v1/usage，应用后按模型写进模型列表。',
+      evidence: 'bridge/connectors.mjs',
+      endpoint: '/api/connectors',
+      feature: 'connectors',
+    },
+  },
+  {
+    id: 'workbuddy',
+    name: 'dsh-connect-workbuddy',
+    version: '5.3.1',
+    summary: '把本机已登录的 WorkBuddy 桌面端当作模型后端（国内版 / 国际版）。',
+    port: {
+      kind: 'native',
+      detail:
+        '登记 + 凭据探测 + **CLI 路由**：WorkBuddy 自带 CodeBuddy CLI，桥把 Anthropic 请求扁平化后调用 `codebuddy -p`（`--permission-mode dontAsk --tools ""`，只读），再把答案包回 Anthropic JSON / SSE。首次使用需在该 CLI 里 `/login` 一次（CLI 登录态与桌面 App 相互独立）；未登录返回 401 `unauthenticated`。',
+      evidence: 'bridge/workbuddy.mjs',
+      endpoint: '/proxy/workbuddy/v1/messages',
+      feature: 'connectors',
+    },
+  },
+  {
+    id: 'office-tools',
+    name: 'dsh-office-tools',
+    version: '1.0.0',
+    summary: '办公文件工具：让模型直接创建 / 读取 / 追加 Word 与 Excel，不用你在终端里拼脚本。',
+    port: {
+      kind: 'native',
+      detail:
+        '自建 MCP 服务（随包 node 启动，零依赖 OOXML 引擎）：word_create / word_read / word_update / excel_create / excel_read / excel_update 六个工具；路径限制在工作区内，overwrite 默认 false。桥只负责把 --mcp-config 交给 claude.exe，工具在 MCP 进程里执行。',
+      evidence: 'bridge/mcp.mjs',
+      endpoint: '/api/office',
+      feature: 'office',
+    },
+  },
+  {
+    id: 'remote-ssh-ops',
+    name: 'dsh-remote-ssh-ops',
+    version: 'main',
+    summary: '远程运维：SSH 主机管理、远程命令与文件读取，首次连接必须确认服务器指纹。',
+    port: {
+      kind: 'native',
+      detail:
+        '自建「远程运维」：调用系统 OpenSSH（ssh / ssh-keyscan），自带 known_hosts，首次连接先读指纹、由用户确认后才写入；未确认指纹的主机拒绝执行。仅支持密钥 / 代理认证 —— ssh 不能从管道读密码，所以不提供「填密码」这种必然失败的按钮。',
+      evidence: 'bridge/ssh.mjs',
+      endpoint: '/api/ssh',
+      feature: 'ssh',
+    },
+  },
+  {
+    id: 'our-free-model',
+    name: 'dsh-our-free-model',
+    version: '2.1.0',
+    summary: '无需 Key 的免费模型通道集合（OpenCode Zen / Kilo 免费池 + 13 个账号渠道），并提供本机 Anthropic 网关。',
+    port: {
+      kind: 'native',
+      detail:
+        '这是 DSH 插件，ChinaClaude 不能直接加载它；能复用的是它的**本机网关**：插件设置里的「本地转发」把 Anthropic 兼容的 /v1/messages 暴露在本机端口（独立服务默认 127.0.0.1:18900）。设置 → 模型 → 从 our-free-model 导入：填网关地址与它签发的 Key，即可把免费模型拉进列表并直接对话。未安装时按钮会提示去 DSH 里安装并开启本地转发。',
+      evidence: 'bridge/server.mjs',
+      endpoint: '/api/models/import',
+      feature: 'connectors',
+    },
+  },
+  {
+    id: 'im',
+    name: '@xmanrui/dsh-im',
+    version: '5.1.0',
+    summary: '消息通道：把进展推到企业微信 / 飞书 / 钉钉群（Webhook），凭据只存本机、界面只回显掩码。',
+    port: {
+      kind: 'native',
+      detail:
+        '自建「消息通道」：三个渠道的 incoming webhook（钉钉支持加签），只允许访问各自官方域名（防止被当成 SSRF 跳板）；响应永不回传 Webhook 令牌，写入仅限电脑端。官方机器人 SDK、长连接与 QQ / 微信渠道未接入。',
+      evidence: 'bridge/im.mjs',
+      endpoint: '/api/im',
+      feature: 'im',
+    },
+  },
+  {
+    id: 'message-ops',
+    name: 'dsh-message-ops',
+    version: 'main',
+    summary: '消息回滚：把会话退回到上一条用户消息之前，模型下一轮看不到被撤回的问答。',
+    port: {
+      kind: 'native',
+      detail:
+        '自建「消息回滚」：直接截断 Claude Code 的会话记录（~/.claude/projects/<项目>/<会话>.jsonl）到最后一条真实用户输入之前，再让会话以 --resume 重新加载。只回退整轮，不做逐条删除；工具结果不算用户消息，所以不会被误当成回滚点。会话正在写入时拒绝操作。',
+      evidence: 'bridge/rollback.mjs',
+      endpoint: '/api/rollback',
+      feature: 'rollback',
+    },
+  },
+  {
+    id: 'ui-usage-billing',
+    name: 'dsh-ui-usage-billing',
+    version: 'main',
+    summary: '用量与费用：把 token 用量和按价目表估算的花费放在同一页。',
+    port: {
+      kind: 'native',
+      detail:
+        '沿用本应用已有的「费用核算」页：按模型汇总输入/输出/缓存 token 与估算金额；价目表由用户自己填，不内置会过期的价格。这一项没有引入新的计费引擎，只是把它并入设置，替代原先分散在侧栏的读数。',
+      evidence: 'bridge/cost.mjs',
+      endpoint: '/api/cost',
+      feature: 'cost',
+    },
+  },
+  {
+    id: 'modsearch',
+    name: 'dsh-modsearch',
+    version: 'main',
+    summary: '网页搜索：在应用内直接搜，结果只回标题、链接与摘要。',
+    port: {
+      kind: 'native',
+      detail:
+        '自建「网页搜索」：桥向 DuckDuckGo 的 HTML 接口发起一次请求并解析结果，不需要 Key、不执行页面脚本、不抓取结果页正文。被限流时如实报错（对方返回验证页），不会把空结果伪装成「搜不到」。',
+      evidence: 'bridge/search.mjs',
+      endpoint: '/api/search',
+      feature: 'search',
+    },
+  },
+  {
+    id: 'voice-mode',
+    name: 'dsh-voice-mode',
+    version: 'main',
+    summary: '语音输入：把说的话变成输入框里的文字；输出仍由系统朗读能力负责。',
+    port: {
+      kind: 'native',
+      detail:
+        '输入框左侧的麦克风按钮走 WebView 自带的语音识别（Web Speech API），不经过桥、不上传音频到本应用以外的服务。系统没装中文语音包或权限被拒时，按钮会给出具体原因而不是静默失败。语音播报依赖同一套系统能力，当前只在识别方向接入。',
+      evidence: 'web/src/components/Composer.vue',
+      endpoint: 'window.SpeechRecognition',
+      feature: 'voice',
+    },
+  },
+  {
+    id: 'qa-skills',
+    name: 'dsh-qa-skills',
+    version: 'main',
+    summary: '代码测试：识别项目自带的测试命令，按一次跑一次并回显输出。',
+    port: {
+      kind: 'native',
+      detail:
+        '自建「代码测试」：只探测 package.json 的 test 脚本、pytest、go test、cargo test；命令先列出来、点了才执行，单次 3 分钟超时，不安装依赖、不进入 watch 模式。执行仅限电脑端。',
+      evidence: 'bridge/qa.mjs',
+      endpoint: '/api/qa',
+      feature: 'qa',
     },
   },
 ]

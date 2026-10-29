@@ -45,6 +45,25 @@ const SUITES = [
   { name: 'update (unit)', path: join(here, 'update.mjs') },
   { name: 'wechat (unit)', path: join(here, 'wechat.mjs') },
   { name: 'lan-access', path: join(here, 'lan-access.mjs') },
+  // Both are pure-module suites: no mock relay, no claude.exe, so they stay fast enough to run on
+  // every change even though the whole file runs in sequence.
+  { name: 'workbench (unit)', path: join(here, 'workbench.mjs') },
+  { name: 'connectors (unit)', path: join(here, 'connectors.mjs') },
+  // git-ops proves its guardrails without git and SKIPs the mutation round-trip when no binary exists;
+  // the SKIP is reported explicitly so a machine without git cannot look like a green mutation test.
+  { name: 'git-ops (unit)', path: join(here, 'git-ops.mjs') },
+  { name: 'office (unit)', path: join(here, 'office.mjs') },
+  { name: 'ooxml (unit)', path: join(here, 'ooxml.mjs') },
+  { name: 'mcp (unit)', path: join(here, 'mcp.mjs') },
+  { name: 'ssh (unit)', path: join(here, 'ssh.mjs') },
+  { name: 'im (unit)', path: join(here, 'im.mjs') },
+  { name: 'turns (unit)', path: join(here, 'turns.mjs') },
+  { name: 'bots (unit)', path: join(here, 'bots.mjs') },
+  // ofm 起的是随包的独立服务（回环端口、无网络、无凭据），证明「不装 DSH 也能导入」。
+  { name: 'ofm (unit)', path: join(here, 'ofm.mjs') },
+  { name: 'workbuddy (unit)', path: join(here, 'workbuddy.mjs') },
+  { name: 'trae (unit)', path: join(here, 'trae.mjs') },
+  { name: 'traecli (unit)', path: join(here, 'traecli.mjs') },
   { name: 'pricing (unit)', path: join(here, '..', '..', '..', '_probe', 'pricing-check.mjs') },
 ]
 

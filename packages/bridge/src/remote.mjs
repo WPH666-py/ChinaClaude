@@ -68,6 +68,15 @@ export function isLoopback(address) {
  */
 const VIRTUAL_ADAPTER = /virtual|vmware|hyper-?v|vethernet|loopback|docker|tailscale|zerotier|npcap|^tap|^tun|bluetooth|hamachi|radmin|wsl/i
 
+/**
+ * Adapters a phone is plausibly on. Used only to ORDER the list: a Wi-Fi adapter is what the phone
+ * shares, while host-only/virtual adapters are reachable from this machine and from nothing else.
+ */
+const WIRELESS_ADAPTER = /wi-?fi|wlan|wireless|无线|wifi/i
+
+/** Address blocks that belong to host-only virtual adapters (VirtualBox 192.168.56/24, VMware .x). */
+const HOST_ONLY_BLOCK = /^192\.168\.56\./
+
 /** Non-internal IPv4 addresses of this machine, real LAN adapters first. */
 export function localAddresses() {
   const found = []
@@ -77,11 +86,20 @@ export function localAddresses() {
       if (entry.family !== 'IPv4') continue
       // 169.254.x.x means DHCP failed; nothing on that link can be reached reliably.
       const linkLocal = entry.address.startsWith('169.254.')
-      found.push({ name, address: entry.address, virtual: VIRTUAL_ADAPTER.test(name) || linkLocal })
+      const hostOnly = HOST_ONLY_BLOCK.test(entry.address)
+      found.push({
+        name,
+        address: entry.address,
+        virtual: VIRTUAL_ADAPTER.test(name) || linkLocal,
+        // 排序权重：无线优先，其次是 host-only 网段（192.168.56.x 这类只有本机能到），最后是其余。
+        rank: (VIRTUAL_ADAPTER.test(name) || linkLocal ? 4 : 0) + (hostOnly ? 2 : 0) + (WIRELESS_ADAPTER.test(name) ? 0 : 1),
+      })
     }
   }
   // Stable order so the URL does not change between two calls with identical network state.
-  return found.sort((a, b) => Number(a.virtual) - Number(b.virtual) || a.name.localeCompare(b.name))
+  return found
+    .sort((a, b) => a.rank - b.rank || a.name.localeCompare(b.name))
+    .map(({ rank: _rank, ...rest }) => rest)
 }
 
 function sha256(value) {

@@ -26,3 +26,22 @@ _probe/*.tgz
 # it is ignored rather than committed a second time (0.28 MB twice for one asset).
 /ChinaClaude-loading.mp4
 
+# ── 随包二进制与构建缓存 ─────────────────────────────────────────────────────
+# vendor/git（MinGit 2.56.0，91 MB）与 vendor/opencode（opencode.exe，202 MB）是运行时下载进来的
+# 第三方产物，进 Git 会把仓库撑到 300 MB 以上，因此不入库；构建时按 README 的「从源码构建」取回。
+/vendor/git/
+/vendor/opencode/
+# our-free-model 随包运行时：由 tools/vendor-ofm.mjs 从 upstream 重新生成，约 5 MB。
+/vendor/ofm-runtime/
+
+.pnpm-store/
+.buildtmp/
+9000
+
+# 一次性补丁脚本（改完即删，不进历史）
+/_patch-*.mjs
+/_dsh-fix/
+
+# 会话转储含真实对话内容，不公开
+_probe/*.jsonl
+

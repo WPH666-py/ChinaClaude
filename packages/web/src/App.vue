@@ -10,13 +10,19 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useBridge } from './composables/useBridge'
 import Sidebar from './components/Sidebar.vue'
 import Transcript from './components/Transcript.vue'
+import GitPanel from './components/GitPanel.vue'
+import WorkbenchPanel from './components/WorkbenchPanel.vue'
+import WorkbenchTree from './components/WorkbenchTree.vue'
 import Composer from './components/Composer.vue'
 import DirectoryPicker from './components/DirectoryPicker.vue'
 import CatalogPanel from './components/CatalogPanel.vue'
 import SettingsPanel from './components/SettingsPanel.vue'
+import ServerManage from './components/ServerManage.vue'
+import MobileAccess from './components/MobileAccess.vue'
 import SplashScreen from './components/SplashScreen.vue'
 import UpdateDialog from './components/UpdateDialog.vue'
 import TopMenu from './components/TopMenu.vue'
+import MobileFab from './components/MobileFab.vue'
 import SendGuard from './components/SendGuard.vue'
 import { useSettings, parseModelRef } from './composables/useSettings'
 import type { ProviderBalance, SendBlocker, SendRuleHit, TranscriptSummary, UpdateCheck } from './types'
@@ -50,6 +56,8 @@ const startError = ref<string | null>(null)
 const pickerOpen = ref(false)
 const catalogOpen = ref(false)
 const settingsOpen = ref(false)
+/** 主区域当前页面：对话，或整页的服务器管理。 */
+const mainView = ref<'chat' | 'server' | 'mobile'>('chat')
 /**
  * Which section of the settings window to open on.
  *
@@ -57,7 +65,7 @@ const settingsOpen = ref(false)
  * find it themselves after clicking a menu item that names it would be a small betrayal. Passed as a
  * prop rather than a query parameter so a menu click can retarget an already-open window.
  */
-const settingsSection = ref<'general' | 'permission' | 'models' | 'pricing' | 'bundled' | 'import' | 'audit' | 'remote' | 'about'>('general')
+const settingsSection = ref<'general' | 'permission' | 'models' | 'pricing' | 'bundled' | 'plugins' | 'import' | 'audit' | 'remote' | 'about'>('general')
 
 function openSettings(section: string) {
   const allowed = ['general', 'permission', 'models', 'pricing', 'bundled', 'import', 'audit', 'remote', 'about']
@@ -73,7 +81,79 @@ function openSettings(section: string) {
  * behaviours, so the initial value has to agree with the media query below.
  */
 const sidebarCollapsed = ref(typeof window !== 'undefined' && window.matchMedia('(max-width: 720px)').matches)
-const tab = ref<'chat' | 'trace'>('chat')
+
+/** 右侧工作台：大屏常驻、默认展开；小屏默认收起，点右侧「工作台」竖条才向下展开。 */
+const workbenchOpen = ref(typeof window === 'undefined' || !window.matchMedia('(max-width: 820px)').matches)
+
+/** 小屏（手机/平板竖屏）：顶部菜单换成悬浮球，工作台变成整屏抽屉。 */
+const isCompact = ref(false)
+const topMenu = ref<InstanceType<typeof TopMenu> | null>(null)
+let compactQuery: MediaQueryList | null = null
+
+function syncCompact(event: MediaQueryList | MediaQueryListEvent) {
+  isCompact.value = event.matches
+  // 切到小屏时先收起：手机一进来就铺满工作台，会让人以为会话没打开。
+  if (event.matches) workbenchOpen.value = false
+}
+
+/** 悬浮球的动作：能自己处理的自己处理，弹窗类的转给 TopMenu。 */
+function onFabAction(name: string) {
+  if (name === 'restart') void topMenu.value?.restart()
+  else if (name === 'logs') topMenu.value?.showLogs()
+  else if (name === 'author') topMenu.value?.showAuthor()
+  else if (name === 'shop') topMenu.value?.showShop()
+  else if (name === 'feedback') topMenu.value?.showFeedback()
+  else if (name === 'plugins') openSettings('plugins')
+}
+
+/** 右栏宽度（px）：中间区与文件树之间的分隔条可拖动，宽度存本地。 */
+const DOCK_WIDTH_KEY = 'cccn.dockWidth'
+const dockWidth = ref(readStoredDockWidth())
+/** 从右栏点开的文件：非空时在中间弹出预览对话框，关闭即回到对话。 */
+const previewFile = ref<string | null>(null)
+
+function readStoredDockWidth(): number {
+  try {
+    const raw = Number(localStorage.getItem(DOCK_WIDTH_KEY))
+    if (Number.isFinite(raw) && raw >= 240 && raw <= 760) return Math.round(raw)
+  } catch {
+    /* 读不到就用默认值 */
+  }
+  return 360
+}
+
+let dockDragStartX = 0
+let dockDragStartWidth = 0
+
+function startDockResize(event: PointerEvent) {
+  dockDragStartX = event.clientX
+  dockDragStartWidth = dockWidth.value
+  const move = (e: PointerEvent) => {
+    // 分隔条在右栏左侧：往左拖 = 变宽。
+    const next = dockDragStartWidth - (e.clientX - dockDragStartX)
+    dockWidth.value = Math.min(760, Math.max(240, Math.round(next)))
+  }
+  const up = () => {
+    window.removeEventListener('pointermove', move)
+    window.removeEventListener('pointerup', up)
+    try {
+      localStorage.setItem(DOCK_WIDTH_KEY, String(dockWidth.value))
+    } catch {
+      /* 存不下就算了，不影响本次会话 */
+    }
+  }
+  window.addEventListener('pointermove', move)
+  window.addEventListener('pointerup', up)
+}
+const tab = ref<'chat' | 'trace' | 'git'>('chat')
+/**
+ * Git 面板第一次打开后就不再卸载。
+ *
+ * WHY: 每次切到 Git 都会挂载一个全新面板，它 onMounted 里要跑 git status / diff，
+ * 手机上体感就是「点一下没反应」。第一次慢可以接受，之后用 v-show 复用它，
+ * 切回来是瞬时的。
+ */
+const gitMounted = ref(false)
 /** Set when the user explicitly asks for a new session, so polling never overrides it. */
 const setupPinnedByUser = ref(false)
 
@@ -533,6 +613,152 @@ async function onChangeEffort(level: string) {
   }
 }
 
+/**
+ * 导入完成后马上把桥上的新服务商并进本地设置。
+ *
+ * WHY: 模型选择器读本地 settings，导入写桥的 models.json。启动时合并过一次，但用户是在运行中
+ * 导入的，不重新合并就得重启才看得到 —— 这正是「明明导入了却不显示」的那一类问题。
+ */
+/** 服务器管理页里点「打开手机访问设置」：回到对话层并直接跳到设置里对应的分区。 */
+function onServerSettings(section: string) {
+  mainView.value = 'chat'
+  settingsSection.value = section as typeof settingsSection.value
+  settingsOpen.value = true
+}
+
+/**
+ * 撤回一条消息：让桥把会话记录截断到这条之前，重启子进程（--resume），并把原文放回输入框。
+ *
+ * WHY IT RESTARTS: 会话记录是 CLI 的权威历史，只有重新加载它，下一轮才真的看不到被撤回的部分。
+ */
+async function onRecall(text: string) {
+  const id = bridge.activeSessionId.value
+  if (!id) return
+  /**
+   * 先问文件，再问对话。
+   *
+   * WHY ASK FILES FIRST: 用户点「撤回」通常想的是「把这一轮做过的事退回去」；如果只回退对话、
+   * 留下改动过的文件，下一次请求就会在一个已经变了的世界里继续，这比不做更糟。
+   */
+  let restorePaths: string[] = []
+  let since = 0
+  try {
+    const previewResponse = await fetch(`${bridge.baseUrl.value}/api/rollback/preview`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ sessionId: id, text }),
+    })
+    const preview = (await previewResponse.json()) as {
+      ok: boolean
+      error?: string
+      since?: number
+      files?: Array<{ path: string; absolute: string; later: boolean; created: boolean; tooBig: boolean }>
+    }
+    if (!preview.ok) {
+      startError.value = `撤回失败：${preview.error ?? '无法读取这一轮的文件快照'}`
+      return
+    }
+    since = preview.since ?? 0
+    const files = preview.files ?? []
+    const laterFiles = files.filter((file) => file.later)
+    if (files.length > 0) {
+      const list = files.map((file) => `- ${file.path}${file.created ? '（本轮新建）' : ''}${file.tooBig ? '（过大，未快照）' : ''}`).join('\n')
+      const go = window.confirm(`撤回时会还原 ${files.length} 个文件：\n\n${list}\n\n继续？`)
+      if (!go) return
+      restorePaths = files.filter((file) => !file.tooBig).map((file) => file.absolute)
+      if (laterFiles.length > 0) {
+        const names = laterFiles.map((file) => `- ${file.path}`).join('\n')
+        const include = window.confirm(
+          `其中 ${laterFiles.length} 个文件在之后的轮次里也被改过：\n\n${names}\n\n` +
+            '确定 = 连同这些文件一起还原（之后的改动会丢失）；取消 = 跳过它们，只还原其余文件。',
+        )
+        if (!include) {
+          const skip = new Set(laterFiles.map((file) => file.absolute))
+          restorePaths = restorePaths.filter((path) => !skip.has(path))
+        }
+      }
+    } else {
+      const go = window.confirm('撤回这条消息？它之后的问答会一起回滚（这一轮没有改动文件）。')
+      if (!go) return
+    }
+  } catch (problem) {
+    startError.value = `撤回失败：${problem instanceof Error ? problem.message : String(problem)}`
+    return
+  }
+  try {
+    const response = await fetch(`${bridge.baseUrl.value}/api/rollback`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ sessionId: id, text }),
+    })
+    const answer = (await response.json()) as { ok: boolean; error?: string; removedText?: string; restarted?: boolean }
+    if (!answer.ok) {
+      startError.value = `撤回失败：${answer.error ?? '未知原因'}`
+      return
+    }
+    if (restorePaths.length > 0) {
+      const restoreResponse = await fetch(`${bridge.baseUrl.value}/api/rollback/restore`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ sessionId: id, since, paths: restorePaths }),
+      })
+      const restored = (await restoreResponse.json()) as { ok: boolean; restored?: unknown[]; skipped?: Array<{ path: string; reason: string }> }
+      if ((restored.skipped ?? []).length > 0) {
+        startError.value = `有 ${(restored.skipped ?? []).length} 个文件没还原：${(restored.skipped ?? []).map((item) => `${item.path}（${item.reason}）`).join('；')}`
+      }
+    }
+    composerDraft.value = { text: answer.removedText ?? text, nonce: Date.now() }
+    // 本地时间线同步回退：否则被撤回的问答还留在屏幕上，看起来像回滚没生效。
+    const target = text.trim()
+    for (let index = bridge.events.value.length - 1; index >= 0; index -= 1) {
+      const event = bridge.events.value[index]
+      if (event.kind === 'user' && (event.text ?? '').trim() === target) {
+        bridge.events.value = bridge.events.value.slice(0, index)
+        break
+      }
+    }
+    startError.value = null
+    startError.value = null
+  } catch (problem) {
+    startError.value = `撤回失败：${problem instanceof Error ? problem.message : String(problem)}`
+  }
+}
+
+async function onModelsChanged() {
+  try {
+    const shared = await bridge.fetchSharedModels()
+    const local = store.settings.value.providers
+    for (const remote of shared.providers) {
+      if (typeof remote.baseUrl !== 'string' || remote.baseUrl === '') continue
+      const incoming = (remote.models ?? []).filter((model) => model?.model)
+      const existing = local.find((entry) => entry.baseUrl === remote.baseUrl)
+      if (!existing) {
+        local.push({ ...remote })
+        continue
+      }
+      const known = new Set(existing.models.map((model) => model.model))
+      for (const model of incoming) {
+        if (known.has(model.model)) continue
+        existing.models.push({ id: model.id, model: model.model, label: model.label ?? model.model })
+        known.add(model.model)
+      }
+    }
+    await bridge.publishModels(local)
+  } catch {
+    // 合并失败就保持原样：下一次启动还会再试一次。
+  }
+}
+
+onMounted(() => {
+  compactQuery = window.matchMedia('(max-width: 820px)')
+  syncCompact(compactQuery)
+  compactQuery.addEventListener('change', syncCompact)
+})
+
+onBeforeUnmount(() => {
+  compactQuery?.removeEventListener('change', syncCompact)
+})
+
 onMounted(async () => {
   await bridge.refreshHealth()
   await bridge.refreshDiscovery()
@@ -567,6 +793,55 @@ onMounted(async () => {
       // Unreachable or unpaired: fall back to this device's own binding form.
     }
   } else {
+    /**
+     * 桌面端：先把桥上已有的服务商并进本地设置，再发布。
+     *
+     * WHY: 导入的模型写在桥的 models.json 里，而模型选择器读的是本地 settings。之前这里直接 publish，把
+     * 桥上的导入行覆盖成本地那一条——于是「导入成功但下拉里没有」。先合并再发布，两边都不会丢。
+     */
+    try {
+      const shared = await bridge.fetchSharedModels()
+      const local = store.settings.value.providers
+      for (const remote of shared.providers) {
+        if (typeof remote.baseUrl !== 'string' || remote.baseUrl === '') continue
+        const existing = local.find((entry) => entry.baseUrl === remote.baseUrl)
+        if (existing) {
+          /**
+           * 同一服务商：把桥上多出来的模型补进本地。
+           *
+           * WHY UNION, NOT SKIP: local settings keep a row per provider, and an earlier one-model row would
+           * otherwise shadow a freshly imported 29-model list forever (the publish would write the stale one
+           * back to the bridge). Union by model name keeps user edits and picks up new catalogs.
+           */
+          // 刷新语义：远端清单是权威，整份替换（下架的模型要消失）；非 /proxy/ 的服务商保持并集，避免动用户的私有模型。
+          const isProxy = remote.baseUrl.includes('/proxy/')
+          const incoming = (remote.models ?? []).filter((model) => model?.model)
+          if (isProxy && incoming.length > 0) {
+            existing.models = incoming.map((model) => ({ id: model.id ?? crypto.randomUUID(), model: model.model, label: model.label ?? model.model }))
+          } else {
+            for (const model of incoming) {
+              if (existing.models.some((entry) => entry.model === model.model)) continue
+              existing.models.push({ id: model.id ?? crypto.randomUUID(), model: model.model, label: model.label ?? model.model })
+            }
+          }
+          continue
+        }
+        local.push({
+          id: crypto.randomUUID(),
+          name: remote.name ?? remote.baseUrl,
+          baseUrl: remote.baseUrl,
+          apiKey: remote.baseUrl.includes('/proxy/') ? 'local-cli' : '',
+          persistKey: false,
+          models: (remote.models ?? []).map((model) => ({
+            id: model.id ?? crypto.randomUUID(),
+            model: model.model,
+            label: model.label ?? model.model,
+          })),
+        })
+      }
+    } catch {
+      // 桥不可达时保持本地列表，下面的发布照常进行。
+    }
     void bridge.publishModels(store.settings.value.providers).catch(() => {})
   }
 
@@ -620,6 +895,17 @@ onMounted(async () => {
     void createSessionIn(defaultWorkspace.value)
   }
 
+  /**
+   * 共享的「当前会话」：先向桥对齐一次，再订阅后续变化。
+   *
+   * 对齐放在自动新建之后：本页刚建的会话已经是桥上的当前会话，sync 不会把页面拉回旧的；
+   * 手机上本地没有选择时，这里接管桌面端正在看的会话——页面不再显示“未选择工作目录”。
+   * `?session=` / 选择器这类显式 URL 跳过对齐，让链接保持可复现（订阅仍然建立，首帧通常
+   * 就是刚 openSession 的那个 id，不会触发切换）。
+   */
+  if (!pinnedByUrl) void bridge.syncActiveSession()
+  bridge.connectStateStream()
+
   // Deliberately NOT awaited: the update check must never delay or block the app coming up.
   void checkForUpdates()
 })
@@ -656,7 +942,7 @@ watch(
   },
 )
 
-onBeforeUnmount(() => bridge.detach())
+onBeforeUnmount(() => bridge.dispose())
 
 /**
  * Start a session in `cwd` on the bound model.
@@ -711,7 +997,8 @@ async function createSessionIn(cwd: string) {
 async function openExisting(id: string) {
   setupOpen.value = false
   setupPinnedByUser.value = false
-  await bridge.openSession(id)
+  // 用户主动选中：先让桥广播给另一台设备，再在本地 attach；两端看同一个“当前会话”。
+  await bridge.selectSessionRemote(id)
 }
 
 /**
@@ -776,13 +1063,15 @@ function newSession() {
 </script>
 
 <template>
-  <div class="shell">
+  <div class="shell" :style="{ '--dock-w': dockWidth + 'px' }">
     <!--
       The menu bar sits OUTSIDE `.frame`, which is a two-column grid: putting a full-width row inside
       it would need a grid-template change and would break the sidebar's own layout. As a flex sibling
       the bar is a plain row above everything, and the frame keeps the height it always had.
     -->
     <TopMenu
+      ref="topMenu"
+      :compact="isCompact"
       :version="bridge.health.value?.appVersion ?? ''"
       :cwd="bridge.activeSession.value?.cwd ?? null"
       :session-id="bridge.activeSessionId.value"
@@ -793,7 +1082,40 @@ function newSession() {
       :check-update="checkForUpdatesFromMenu"
       @open-settings="openSettings"
       @select-session="openExisting"
+      @toggle-workbench="workbenchOpen = !workbenchOpen"
+      @open-server="mainView = 'server'"
+      @open-mobile="mainView = 'mobile'"
     />
+
+    <!-- 右栏只放文件树；点文件才在中间弹预览，关掉就回到对话。 -->
+    <div
+      v-if="workbenchOpen"
+      class="dockGrip"
+      role="separator"
+      aria-orientation="vertical"
+      title="拖动调整宽度"
+      @pointerdown.prevent="startDockResize"
+    />
+    <aside v-if="workbenchOpen" class="dock" aria-label="文件树">
+      <WorkbenchTree
+        :cwd="bridge.activeSession.value?.cwd ?? null"
+        @open="previewFile = $event"
+        @close="workbenchOpen = false"
+      />
+    </aside>
+
+    <WorkbenchPanel
+      v-if="previewFile"
+      :cwd="bridge.activeSession.value?.cwd ?? null"
+      :session-id="bridge.activeSessionId.value"
+      :file="previewFile"
+      @close="previewFile = null"
+    />
+
+    <!-- 收起状态：右侧留一个竖条入口，工作台永远在右边，而不是从顶部菜单弹出。 -->
+    <button v-else class="dockRail" type="button" title="打开工作台" @click="workbenchOpen = true">
+      工作台
+    </button>
 
     <div class="frame" :class="{ 'frame--rail': sidebarCollapsed }">
     <!-- Narrow screens turn the sidebar into an overlay, so the conversation behind it must not stay
@@ -945,70 +1267,89 @@ function newSession() {
       <template v-else>
         <header class="topBar">
           <!-- The collapse toggle lives inside the sidebar, so a rail needs its own way back. -->
-          <button
-            v-if="sidebarCollapsed"
-            class="iconButton"
-            type="button"
-            title="展开侧栏"
-            @click="sidebarCollapsed = false"
-          >
-            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-              <rect x="2" y="3" width="12" height="10" rx="2" stroke="currentColor" stroke-width="1.4" />
-              <path d="M6.5 3v10" stroke="currentColor" stroke-width="1.4" />
-            </svg>
-          </button>
-          <!--
-            The working directory is a button, not a label. With the setup form gone this is the only
-            place left to say "run the next session somewhere else" — and losing that would be a worse
-            trade than the form it replaced.
-          -->
-          <button
-            class="topBar__title topBar__title--action"
-            type="button"
-            title="切换工作目录（会在该目录下新建会话）"
-            @click="pickerOpen = true"
-          >
-            {{ bridge.activeSession.value?.cwd ?? '未选择工作目录' }}
-          </button>
-          <span class="topBar__spacer" />
-          <div class="tabs">
-            <button class="tab" :class="{ 'tab--active': tab === 'chat' }" type="button" @click="tab = 'chat'">
-              对话
+          <div class="topBar__row topBar__row--title">
+            <button
+              v-if="sidebarCollapsed"
+              class="iconButton"
+              type="button"
+              title="展开侧栏"
+              @click="sidebarCollapsed = false"
+            >
+              <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                <rect x="2" y="3" width="12" height="10" rx="2" stroke="currentColor" stroke-width="1.4" />
+                <path d="M6.5 3v10" stroke="currentColor" stroke-width="1.4" />
+              </svg>
             </button>
-            <button class="tab" :class="{ 'tab--active': tab === 'trace' }" type="button" @click="tab = 'trace'">
-              轨迹
-            </button>
+            <span class="topBar__brand">ChinaClaude</span>
+            <span class="topBar__version">v{{ bridge.health.value?.appVersion ?? '' }}</span>
           </div>
-          <span class="topBar__spacer" />
-          <span v-if="bridge.pendingPermissions.value.length > 0" class="chip chip--attention">
-            <span class="dot dot--starting" />
-            等待授权 · {{ bridge.pendingPermissions.value.length }}
-          </span>
-          <span v-if="bridge.pendingDialogs.value.length > 0" class="chip chip--attention">
-            <span class="dot dot--starting" />
-            等待选择 · {{ bridge.pendingDialogs.value.length }}
-          </span>
-          <button class="chip" type="button" title="技能与子代理" @click="openCatalog">
-            <svg width="13" height="13" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-              <path d="M8 1.8l1.7 3.6 3.9.5-2.9 2.7.8 3.9L8 10.6l-3.5 1.9.8-3.9L2.4 5.9l3.9-.5z" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round" />
-            </svg>
-            技能
-            <span v-if="bridge.catalog.value?.ready" class="chip__count">{{ bridge.catalog.value.commands.length }}</span>
-          </button>
-          <span class="chip chip--static">
-            <span class="dot" :class="`dot--${bridge.activeSession.value?.status ?? 'closed'}`" />
-            {{ bridge.activeSession.value?.status ?? '—' }}
-          </span>
+
+          <div class="topBar__row topBar__row--meta">
+            <!--
+              The working directory is a button, not a label. With the setup form gone this is the only
+              place left to say "run the next session somewhere else" — and losing that would be a worse
+              trade than the form it replaced.
+            -->
+            <button
+              class="topBar__title topBar__title--action"
+              type="button"
+              title="切换工作目录（会在该目录下新建会话）"
+              @click="pickerOpen = true"
+            >
+              {{ bridge.activeSession.value?.cwd ?? '未选择工作目录' }}
+            </button>
+            <span v-if="bridge.pendingPermissions.value.length > 0" class="chip chip--attention">
+              <span class="dot dot--starting" />
+              等待授权 · {{ bridge.pendingPermissions.value.length }}
+            </span>
+            <span v-if="bridge.pendingDialogs.value.length > 0" class="chip chip--attention">
+              <span class="dot dot--starting" />
+              等待选择 · {{ bridge.pendingDialogs.value.length }}
+            </span>
+            <button class="chip" type="button" title="技能与子代理" @click="openCatalog">
+              <svg width="13" height="13" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                <path d="M8 1.8l1.7 3.6 3.9.5-2.9 2.7.8 3.9L8 10.6l-3.5 1.9.8-3.9L2.4 5.9l3.9-.5z" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round" />
+              </svg>
+              技能
+              <span v-if="bridge.catalog.value?.ready" class="chip__count">{{ bridge.catalog.value.commands.length }}</span>
+            </button>
+            <span class="chip chip--static">
+              <span class="dot" :class="`dot--${bridge.activeSession.value?.status ?? 'closed'}`" />
+              {{ bridge.activeSession.value?.status ?? '—' }}
+            </span>
+          </div>
+
+          <div class="topBar__row topBar__row--tabs">
+            <div class="tabs">
+              <button class="tab" :class="{ 'tab--active': tab === 'chat' }" type="button" @click="tab = 'chat'">
+                对话
+              </button>
+              <button class="tab" :class="{ 'tab--active': tab === 'trace' }" type="button" @click="tab = 'trace'">
+                轨迹
+              </button>
+              <button class="tab" :class="{ 'tab--active': tab === 'git' }" type="button" @click="tab = 'git'; gitMounted = true">
+                Git
+              </button>
+            </div>
+            <!-- 小屏把功能菜单放进第三行，和三个标签同一行；抽屉仍是覆盖式。 -->
+            <MobileFab v-if="isCompact" inline @action="onFabAction" />
+          </div>
         </header>
 
+        <!-- Git 标签：内嵌在中间区（ShellDialog 的 inline 形态），不再浮在对话上。
+             首次打开才挂载，之后用 v-show 复用，避免每次切换都重跑 git 命令。 -->
+        <div v-show="tab === 'git'" class="centerGit">
+          <GitPanel v-if="gitMounted" inline :cwd="bridge.activeSession.value?.cwd ?? null" @close="tab = 'chat'" />
+        </div>
         <Transcript
           :events="bridge.events.value"
           :busy="bridge.isBusy.value"
-          :mode="tab"
+          :mode="tab === 'git' ? 'chat' : tab"
           :subagents="bridge.subagents.value"
           :is-subagent-launcher="bridge.isSubagentLauncher"
           @decide="onPermissionDecision"
           @answer="onDialogAnswer"
+          @recall="onRecall"
         />
 
         <SendGuard
@@ -1037,6 +1378,7 @@ function newSession() {
           @stop="bridge.stopSession()"
           @change-mode="onChangeMode"
           @change-model="onChangeModel"
+          @recall="onRecall"
           @change-effort="onChangeEffort"
           @open-settings="settingsOpen = true"
         />
@@ -1069,6 +1411,14 @@ function newSession() {
       @close="updateOpen = false"
     />
 
+    <MobileAccess v-if="mainView === 'mobile'" @close="mainView = 'chat'" />
+
+    <ServerManage
+      v-if="mainView === 'server'"
+      @close="mainView = 'chat'"
+      @open-settings="onServerSettings"
+    />
+
     <SettingsPanel
       v-if="settingsOpen"
       :bridge="bridge"
@@ -1082,6 +1432,7 @@ function newSession() {
       :loaded-mcp-servers="bridge.sessionInit.value?.mcpServers ?? []"
       :audit-suggested-path="bridge.activeSession.value?.cwd ?? null"
       @close="settingsOpen = false"
+      @models-changed="onModelsChanged"
       @apply-mode="onChangeMode"
       @new-session="settingsOpen = false; newSession()"
       @open-transcript="onOpenTranscript"

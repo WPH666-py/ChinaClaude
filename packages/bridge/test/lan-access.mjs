@@ -338,16 +338,19 @@ if (lanIp) {
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ providers: seededProviders }),
       })
-      check('电脑端可以发布模型配置', publish.status === 200 && publish.json().providers?.length === 1)
+      // 发布是合并语义（桌面端每次启动都会 POST 一次，整份覆盖会把导入行抹掉），所以断言「包含」而不是「唯一」。
+check('电脑端可以发布模型配置', publish.status === 200 && (publish.json().providers ?? []).some((p) => p.name === 'DeepSeek'))
       // 端点与模型名共享，凭据不共享：手机只补齐端点即可，密钥在手机本地输入。
       check('发布响应不回传 API-KEY', !JSON.stringify(publish.json()).includes('sk-shared-123'))
 
       const loopModels = (await request(loop, '/api/models')).json()
-      check('回环读到已发布的模型并标记 loopback:true', loopModels.loopback === true && loopModels.providers[0]?.name === 'DeepSeek')
-      check('回环读取的共享模型也不含 API-KEY', loopModels.providers[0]?.apiKey === '' && !JSON.stringify(loopModels).includes('sk-shared-123'))
+      const shared = (loopModels.providers ?? []).find((p) => p.name === 'DeepSeek')
+check('回环读到已发布的模型并标记 loopback:true', loopModels.loopback === true && shared?.baseUrl === 'https://api.deepseek.com/anthropic')
+      check('回环读取的共享模型也不含 API-KEY', shared?.apiKey === '' && !JSON.stringify(loopModels).includes('sk-shared-123'))
 
       const lanModels = await request(lan, '/api/models', { headers: { cookie } })
-      check('已配对手机可以读到共享模型（loopback:false）', lanModels.status === 200 && lanModels.json().loopback === false && lanModels.json().providers?.length === 1)
+      const lanShared = (lanModels.json().providers ?? []).find((p) => p.name === 'DeepSeek')
+check('已配对手机可以读到共享模型（loopback:false）', lanModels.status === 200 && lanModels.json().loopback === false && lanShared !== undefined)
       check('已配对手机读到的共享模型不含 API-KEY', lanModels.json().providers[0]?.apiKey === '' && !JSON.stringify(lanModels.json()).includes('sk-shared-123'))
 
       check('已配对手机不能修改模型配置（仅电脑端）', (await request(lan, '/api/models', { method: 'POST', headers: { cookie, 'content-type': 'application/json' }, body: JSON.stringify({ providers: [] }) })).status === 403)

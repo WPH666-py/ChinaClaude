@@ -29,6 +29,8 @@ const props = defineProps<{
 const emit = defineEmits<{
   (e: 'decide', payload: { requestId: string; behavior: 'allow' | 'deny'; scope?: 'once' | 'session' }): void
   (e: 'answer', payload: { requestId: string; behavior: 'completed' | 'cancelled'; result?: unknown }): void
+  /** 撤回这条用户消息：回滚会话到它之前，并把原文放回输入框。 */
+  (e: 'recall', text: string): void
 }>()
 
 /** Child events of a subagent, or an empty list. */
@@ -430,6 +432,15 @@ function traceFields(event: BridgeEvent): Array<{ key: string; label: string; va
       <template v-for="(event, index) in items" :key="`${event.kind}-${event.at}-${index}`">
         <!-- user turn: right-aligned r22 bubble -->
         <div v-if="event.kind === 'user'" class="userRow">
+          <button
+            v-if="!busy"
+            class="userRecall"
+            type="button"
+            title="撤回这条消息并回滚到这里"
+            @click="emit('recall', event.text ?? '')"
+          >
+            撤回
+          </button>
           <div class="userBubble">{{ event.text }}</div>
         </div>
 

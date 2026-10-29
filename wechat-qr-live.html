@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>微信扫码登录 · 实时刷新</title>
+<style>
+  html,body{margin:0;height:100%}
+  body{background:#111418;color:#e6e8ea;font:14px/1.6 "Microsoft YaHei",system-ui,sans-serif;
+       display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px}
+  h1{font-size:17px;margin:0;font-weight:600}
+  #box{background:#fff;padding:14px;border-radius:12px;width:320px;height:320px;
+       display:flex;align-items:center;justify-content:center;box-shadow:0 8px 30px #0008}
+  #box svg{width:100%;height:100%;display:block}
+  #meta{font-size:13px;color:#9aa4ae;text-align:center;min-height:2.6em}
+  .ok{color:#3ddc84} .bad{color:#ff6b6b} .warn{color:#ffc857}
+  #url{font-size:11px;color:#5c666f;max-width:640px;word-break:break-all;text-align:center}
+</style>
+</head>
+<body>
+<h1>微信扫码登录</h1>
+<div id="box"><span style="color:#888">加载中…</span></div>
+<div id="meta">正在获取二维码…</div>
+<div id="url"></div>
+
+<script>
+const QR    = 'http://127.0.0.1:59116/wechat/api/qr-image';
+const REL   = 'http://127.0.0.1:59116/wechat/api/relogin';
+const STAT  = 'http://127.0.0.1:59116/wechat/api/status';
+const box   = document.getElementById('box');
+const meta  = document.getElementById('meta');
+const urlEl = document.getElementById('url');
+
+let phase = '';
+let lastSwap = 0;
+let failStreak = 0;
+
+function setMeta(html, cls) {
+  meta.className = cls || '';
+  meta.innerHTML = html;
+}
+
+async function paint(svg) {
+  // only swap when the qrcode token really changed -> no flicker
+  const m = svg.match(/qrcode=([0-9a-f]{32})/i);
+  const token = m ? m[1] : String(svg.length);
+  if (token === box.dataset.token) return;
+  box.dataset.token = token;
+  box.innerHTML = svg;
+  lastSwap = Date.now();
+  urlEl.textContent = m ? ('https://liteapp.weixin.qq.com/q/7GiQu1?qrcode=' + token + '&bot_type=3') : '';
+}
+
+async function relogin() {
+  try {
+    await fetch(REL, {method:'POST'});
+    setMeta('已重新生成二维码，请立刻用微信扫码', 'warn');
+  } catch (e) {
+    setMeta('重新生成失败：' + e, 'bad');
+  }
+}
+
+async function tick() {
+  try {
+    const st = await (await fetch(STAT, {cache:'no-store'})).json();
+    phase = st.phase || '';
+    failStreak = 0;
+
+    if (phase === 'waiting-qr') {
+      const r = await fetch(QR, {cache:'no-store'});
+      const svg = await r.text();
+      if (!/^\s*(<\?xml|<svg)/i.test(svg)) throw new Error('qr-image 返回非 SVG');
+      await paint(svg);
+      const age = Math.round((Date.now() - lastSwap) / 1000);
+      setMeta(`等待扫码 · 本码生成于 <b>${age}s</b> 前（约 120s 后自动换新）<br>
+               <span style="font-size:12px">请在微信中扫描<b>当前</b>这张，过期图会扫码无反应</span>`);
+    } else if (phase === 'scanned' || phase === 'confirming') {
+      setMeta('✅ 已扫码，请在手机上确认登录', 'ok');
+    } else if (phase === 'connected' || phase === 'ready' || st.userCount > 0) {
+      setMeta(`✅ 登录成功 · 用户数 ${st.userCount} · 可以关闭本页了`, 'ok');
+      clearInterval(timer);
+    } else if (phase === 'failed' || st.error) {
+      setMeta(`⏱ 登录超时/失败：${st.error || phase}<br>正在自动重新生成…`, 'warn');
+      if (Date.now() - lastSwap > 1500) { lastSwap = Date.now(); await relogin(); }
+    } else {
+      setMeta(`状态：${phase || '未知'}，刷新中…`);
+    }
+  } catch (e) {
+    if (++failStreak >= 3) setMeta('无法连接 DSH（127.0.0.1:59116）：' + e.message, 'bad');
+  }
+}
+
+const timer = setInterval(tick, 2000);
+tick();
+</script>
+</body>
+</html>

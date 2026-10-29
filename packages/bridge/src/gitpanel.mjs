@@ -5,10 +5,12 @@
  * a JS implementation of the index would be a worse git than the one the user already has). Executing
  * the real `git` means the panel agrees with the terminal the user is also looking at.
  *
- * WHAT IT DELIBERATELY DOES NOT DO: push, pull, fetch, reset, checkout, clean, stash. Those either
- * touch a remote or discard work, and a GUI button is one misclick away from an unrecoverable state.
- * The panel submits what the user staged and reports git's own output; everything else is a terminal
- * away, on purpose.
+ * WHAT IT DOES AND DOES NOT DO: it stages, commits, lists branches, switches branches, and manages
+ * stashes — those were added for parity with the upstream panel after the reference app shipped them
+ * with confirmations. Still out of scope, on purpose: push / pull / fetch (remote, credentials), reset
+ * (history rewrite), `clean -fdx` and `checkout --force` (whole-tree data loss). Discarding one file
+ * and dropping a stash ARE offered, but only behind `confirm: true` from the caller, because they are
+ * the two destructive actions a review panel genuinely needs.
  *
  * EVERY CALL IS BOUNDED AND NON-INTERACTIVE. `execFile` (never `exec`), argv only, no shell, `cwd`
  * validated as an existing absolute directory containing a `.git` entry, an explicit timeout, output
@@ -64,6 +66,14 @@ function candidates() {
   const list = []
   const override = String(process.env.CCCN_GIT ?? '').trim()
   if (override) list.push(override)
+  /**
+   * 随包内置的便携版 git 优先：用户不需要自己装 git，也不能因为系统 PATH 没有 git 就退化成「装一个」。
+   * 放在 sidecar 根下的 `git/cmd/git.exe`（sidecar 根 = node.exe 所在目录）。
+   */
+  if (process.platform === 'win32') {
+    const sidecarRoot = process.env.CCCN_SIDECAR_DIR ?? dirname(process.execPath)
+    list.push(join(sidecarRoot, 'git', 'cmd', 'git.exe'))
+  }
   list.push('git')
   if (process.platform === 'win32') {
     const roots = [
@@ -589,6 +599,270 @@ export async function gitCommit({ cwd, message, files } = {}) {
       return { ok: false, available: answer.available !== false, output, ...answer }
     }
 
+    return { ok: true, available: true, output }
+  } catch (error) {
+    return { ok: false, available: true, output: '', error: String(error?.message ?? error) }
+  }
+}
+
+/**
+ * The path list a page sent, checked before git expands anything.
+ *
+ * Same rule as `gitCommit`: git itself expands pathspecs, so `*` must be refused rather than trusted to
+ * mean "the one file the user clicked". NUL and newline are refused because a list that can contain them
+ * cannot be shown back to the user accurately.
+ */
+function literalPaths(files) {
+  const paths = (Array.isArray(files) ? files : [])
+    .filter((entry) => typeof entry === 'string' && entry.trim() !== '')
+    .map((entry) => entry.trim())
+  if (paths.length === 0) return { ok: false, error: '没有指定文件' }
+  if (paths.some((entry) => /[*?[\]]/.test(entry))) return { ok: false, error: '文件路径不支持通配符，请传入具体文件' }
+  if (paths.some((entry) => entry.includes('\0') || entry.includes('\n'))) return { ok: false, error: '文件路径非法' }
+  return { ok: true, paths }
+}
+
+/** Validate the workspace + repository, the two checks every write below needs. */
+function readyRepo(cwd) {
+  const dir = validateCwd(cwd)
+  if (!dir.ok) return { ok: false, error: dir.error }
+  const guard = repoGuard(dir.dir)
+  if (!guard.ok) return { ok: false, error: guard.error, detail: guard.detail }
+  return { ok: true, dir: dir.dir }
+}
+
+/**
+ * Stage files (`add`) or take them back out of the index (`restore --staged`).
+ *
+ * Unstaging falls back to `reset` because `git restore` only exists from 2.23; the fallback is what
+ * keeps an older Git for Windows usable instead of answering "unknown option" to a basic action.
+ */
+export async function gitStage({ cwd, files } = {}) {
+  return await mutateIndex({ cwd, files, action: 'stage' })
+}
+
+export async function gitUnstage({ cwd, files } = {}) {
+  return await mutateIndex({ cwd, files, action: 'unstage' })
+}
+
+async function mutateIndex({ cwd, files, action }) {
+  try {
+    // Cheap input checks first: "you did not name a file" and "this path is a wildcard" are answerable
+    // without touching the repository, and a user on a machine with no git deserves the real reason.
+    const paths = literalPaths(files)
+    if (!paths.ok) return { ok: false, available: true, output: '', error: paths.error }
+    const repo = readyRepo(cwd)
+    if (!repo.ok) return { ok: false, available: true, output: '', error: repo.error, ...(repo.detail ? { detail: repo.detail } : {}) }
+
+    const command = pickCommand()
+    const args =
+      action === 'stage'
+        ? ['add', '--', ...paths.paths]
+        : ['restore', '--staged', '--', ...paths.paths]
+    let result = await run(command, args, { cwd: repo.dir, timeoutMs: WRITE_TIMEOUT_MS })
+
+    if (action === 'unstage' && !result.ok) {
+      // Older git has no `restore`; `reset` does the same job for the index.
+      result = await run(command, ['reset', '-q', 'HEAD', '--', ...paths.paths], { cwd: repo.dir, timeoutMs: WRITE_TIMEOUT_MS })
+    }
+
+    const output = `${result.stdout}${result.stderr}`.trim()
+    if (!result.ok) {
+      if (/pathspec .* did not match|did not match any file/i.test(output)) {
+        return { ok: false, available: true, output, error: action === 'stage' ? '这些文件不在工作区里' : '暂存区里没有这些文件' }
+      }
+      const answer = failureAnswer(result, command, action === 'stage' ? '暂存' : '取消暂存')
+      return { ok: false, available: answer.available !== false, output, ...answer }
+    }
+    return { ok: true, available: true, output: output || (action === 'stage' ? '已暂存' : '已取消暂存') }
+  } catch (error) {
+    return { ok: false, available: true, output: '', error: String(error?.message ?? error) }
+  }
+}
+
+/**
+ * Throw away one file's uncommitted change.
+ *
+ * `confirm` is required by the caller and checked here as well: this is the only action in the module
+ * that destroys work with no copy anywhere, and a second guard is cheap next to a misrouted request.
+ */
+export async function gitDiscard({ cwd, path, confirm } = {}) {
+  try {
+    if (confirm !== true) return { ok: false, available: true, output: '', error: '丢弃改动需要显式确认（confirm: true）' }
+    const target = literalPaths([path])
+    if (!target.ok) return { ok: false, available: true, output: '', error: target.error }
+    const repo = readyRepo(cwd)
+    if (!repo.ok) return { ok: false, available: true, output: '', error: repo.error, ...(repo.detail ? { detail: repo.detail } : {}) }
+    const file = target.paths[0]
+
+    const command = pickCommand()
+    let result = await run(command, ['restore', '--', file], { cwd: repo.dir, timeoutMs: WRITE_TIMEOUT_MS })
+    if (!result.ok && /did not match|pathspec/i.test(result.stderr + result.stdout)) {
+      // Untracked files are not restored by `restore`; `clean -f` removes exactly the named path (no -d,
+      // no -x, so it cannot wander into ignored or nested content).
+      result = await run(command, ['clean', '-f', '--', file], { cwd: repo.dir, timeoutMs: WRITE_TIMEOUT_MS })
+    }
+    const output = `${result.stdout}${result.stderr}`.trim()
+    if (!result.ok) {
+      const answer = failureAnswer(result, command, '丢弃改动')
+      return { ok: false, available: answer.available !== false, output, ...answer }
+    }
+    return { ok: true, available: true, output: output || '已丢弃改动' }
+  } catch (error) {
+    return { ok: false, available: true, output: '', error: String(error?.message ?? error) }
+  }
+}
+
+/**
+ * Local and remote branches.
+ *
+ * `for-each-ref` rather than `git branch -a --format`: the latter prints a leading `*` and pads names for
+ * a terminal, which a parser has to strip and can get wrong for a branch containing spaces.
+ */
+export async function gitBranches({ cwd } = {}) {
+  try {
+    const repo = readyRepo(cwd)
+    if (!repo.ok) return { ok: false, available: true, branches: [], error: repo.error, ...(repo.detail ? { detail: repo.detail } : {}) }
+    const command = pickCommand()
+    const result = await run(
+      command,
+      ['for-each-ref', '--format=%(refname)%1f%(refname:short)%1f%(upstream:short)%1f%(HEAD)', 'refs/heads', 'refs/remotes'],
+      { cwd: repo.dir, timeoutMs: READ_TIMEOUT_MS },
+    )
+    if (!result.ok) {
+      const answer = failureAnswer(result, command, '读取分支')
+      return { ok: false, available: answer.available !== false, branches: [], ...answer }
+    }
+    const branches = result.stdout
+      .split('\n')
+      .filter((line) => line.trim() !== '')
+      .map((line) => line.split('\x1f'))
+      .filter((parts) => (parts[0] ?? '') !== '' && !/\/HEAD$/.test(parts[0] ?? ''))
+      .map((parts) => ({
+        ref: parts[0] ?? '',
+        name: parts[1] ?? '',
+        upstream: parts[2] ?? '',
+        current: (parts[3] ?? '').trim() === '*',
+        remote: (parts[0] ?? '').startsWith('refs/remotes/'),
+      }))
+      .filter((branch) => branch.name !== '')
+    return { ok: true, available: true, branches }
+  } catch (error) {
+    return { ok: false, available: true, branches: [], error: String(error?.message ?? error) }
+  }
+}
+
+/**
+ * Switch to an existing local branch, or create a local branch tracking a remote one.
+ *
+ * No `--force`, no dirty-tree override: if git refuses because the switch would overwrite local
+ * changes, that refusal is the answer the user needs to read, not something to work around.
+ */
+export async function gitCheckout({ cwd, branch } = {}) {
+  try {
+    const repo = readyRepo(cwd)
+    if (!repo.ok) return { ok: false, available: true, output: '', error: repo.error, ...(repo.detail ? { detail: repo.detail } : {}) }
+    const name = String(branch ?? '').trim()
+    if (name === '') return { ok: false, available: true, output: '', error: '请选择要切换的分支' }
+    if (name.startsWith('-') || name.includes('..') || /[*?[\]\s]/.test(name)) {
+      return { ok: false, available: true, output: '', error: '分支名非法' }
+    }
+
+    const list = await gitBranches({ cwd: repo.dir })
+    if (!list.ok) return { ok: false, available: list.available !== false, output: '', error: list.error }
+    const local = list.branches.find((entry) => !entry.remote && entry.name === name)
+    const remote = list.branches.find((entry) => entry.remote && (entry.name === name || entry.name === `origin/${name}`))
+    if (!local && !remote) return { ok: false, available: true, output: '', error: `没有这个分支：${name}` }
+
+    const command = pickCommand()
+    const args = local ? ['checkout', name] : ['checkout', '-b', name.replace(/^origin\//, ''), '--track', remote.name]
+    const result = await run(command, args, { cwd: repo.dir, timeoutMs: WRITE_TIMEOUT_MS })
+    const output = `${result.stdout}${result.stderr}`.trim()
+    if (!result.ok) {
+      const answer = failureAnswer(result, command, '切换分支')
+      return { ok: false, available: answer.available !== false, output, ...answer }
+    }
+    return { ok: true, available: true, output }
+  } catch (error) {
+    return { ok: false, available: true, output: '', error: String(error?.message ?? error) }
+  }
+}
+
+/** The stash list. `%gd` (stash@{0}) is what apply/pop/drop take, so it is returned as the id. */
+export async function gitStashList({ cwd } = {}) {
+  try {
+    const repo = readyRepo(cwd)
+    if (!repo.ok) return { ok: false, available: true, entries: [], error: repo.error, ...(repo.detail ? { detail: repo.detail } : {}) }
+    const command = pickCommand()
+    const result = await run(command, ['stash', 'list', '--format=%gd%1f%ci%1f%s'], { cwd: repo.dir, timeoutMs: READ_TIMEOUT_MS })
+    if (!result.ok) {
+      const answer = failureAnswer(result, command, '读取储藏')
+      return { ok: false, available: answer.available !== false, entries: [], ...answer }
+    }
+    const entries = result.stdout
+      .split('\n')
+      .filter((line) => line.trim() !== '')
+      .map((line) => {
+        const parts = line.split('\x1f')
+        return { id: parts[0] ?? '', at: parts[1] ?? '', subject: parts.slice(2).join('\x1f') }
+      })
+      .filter((entry) => entry.id !== '')
+    return { ok: true, available: true, entries }
+  } catch (error) {
+    return { ok: false, available: true, entries: [], error: String(error?.message ?? error) }
+  }
+}
+
+/** Save the current working tree into a new stash. */
+export async function gitStashSave({ cwd, message } = {}) {
+  try {
+    const repo = readyRepo(cwd)
+    if (!repo.ok) return { ok: false, available: true, output: '', error: repo.error, ...(repo.detail ? { detail: repo.detail } : {}) }
+    const text = String(message ?? '').trim().slice(0, 200)
+    const command = pickCommand()
+    const result = await run(command, text === '' ? ['stash', 'push'] : ['stash', 'push', '-m', text], {
+      cwd: repo.dir,
+      timeoutMs: WRITE_TIMEOUT_MS,
+    })
+    const output = `${result.stdout}${result.stderr}`.trim()
+    if (!result.ok) {
+      const answer = failureAnswer(result, command, '保存储藏')
+      return { ok: false, available: answer.available !== false, output, ...answer }
+    }
+    if (/No local changes to save/i.test(output)) return { ok: false, available: true, output, error: '没有可储藏的改动' }
+    return { ok: true, available: true, output }
+  } catch (error) {
+    return { ok: false, available: true, output: '', error: String(error?.message ?? error) }
+  }
+}
+
+/**
+ * Apply, pop, or drop one stash.
+ *
+ * `pop` and `drop` destroy the stash entry on success; `apply` never does. A failed `pop` keeps the
+ * entry, which is git's own guarantee and the reason pop is offered at all.
+ */
+export async function gitStashUse({ cwd, index, action, confirm } = {}) {
+  try {
+    const slot = Number(index)
+    if (!Number.isInteger(slot) || slot < 0 || slot > 99) {
+      return { ok: false, available: true, output: '', error: '储藏的序号非法' }
+    }
+    if (action !== 'apply' && action !== 'pop' && action !== 'drop') {
+      return { ok: false, available: true, output: '', error: `未知的储藏操作：${String(action)}` }
+    }
+    if (action === 'drop' && confirm !== true) {
+      return { ok: false, available: true, output: '', error: '删除储藏需要显式确认（confirm: true）' }
+    }
+    const repo = readyRepo(cwd)
+    if (!repo.ok) return { ok: false, available: true, output: '', error: repo.error, ...(repo.detail ? { detail: repo.detail } : {}) }
+    const command = pickCommand()
+    const result = await run(command, ['stash', action, `stash@{${slot}}`], { cwd: repo.dir, timeoutMs: WRITE_TIMEOUT_MS })
+    const output = `${result.stdout}${result.stderr}`.trim()
+    if (!result.ok) {
+      const answer = failureAnswer(result, command, action === 'pop' ? '弹出储藏' : action === 'apply' ? '应用储藏' : '删除储藏')
+      return { ok: false, available: answer.available !== false, output, ...answer }
+    }
     return { ok: true, available: true, output }
   } catch (error) {
     return { ok: false, available: true, output: '', error: String(error?.message ?? error) }

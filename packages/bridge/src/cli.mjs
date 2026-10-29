@@ -11,6 +11,7 @@
  * normal use, because argv is visible to other processes on the machine.
  */
 import { createBridgeServer } from './server.mjs'
+import { ensureMcpConfig } from './mcp-config.mjs'
 import { findBinary, createScanner } from './discovery.mjs'
 import { createRemoteAccess } from './remote.mjs'
 import { existsSync } from 'node:fs'
@@ -100,6 +101,30 @@ const sidecarRoot = process.env.CCCN_SIDECAR_DIR ?? join(dirname(fileURLToPath(i
  * one directory was the trap; the explicit override is kept, the default is now real.
  */
 const bundledDir = process.env.CCCN_BUNDLE_DIR ?? sidecarRoot
+
+/**
+ * Office tools, handed to `claude.exe` as an MCP server.
+ *
+ * The CLI learns MCP servers from a JSON file, and the command has to be the runtime this installation
+ * ships (a target machine has no `node` on PATH) — so the config is written here, where both absolute
+ * paths are known, and exported so `session.mjs` can add `--mcp-config` to every session it spawns.
+ *
+ * Absent pieces degrade to "no MCP config": an older sidecar without `mcp.mjs` must leave sessions
+ * exactly as they were rather than hand the CLI a path that does not exist.
+ */
+const packagedNode = join(sidecarRoot, 'node.exe')
+const packagedMcp = join(sidecarRoot, 'bridge', 'mcp.mjs')
+const ownMcp = join(dirname(fileURLToPath(import.meta.url)), 'mcp.mjs')
+const mcpConfigPath = ensureMcpConfig({
+  nodePath: existsSync(packagedNode) ? packagedNode : process.execPath,
+  entryPath: existsSync(packagedMcp) ? packagedMcp : ownMcp,
+})
+if (mcpConfigPath) {
+  process.env.CCCN_MCP_CONFIG = mcpConfigPath
+  // `sessionMcpConfig` needs the same two paths to pin each session's workspace.
+  process.env.CCCN_MCP_NODE = existsSync(packagedNode) ? packagedNode : process.execPath
+  process.env.CCCN_MCP_ENTRY = existsSync(packagedMcp) ? packagedMcp : ownMcp
+}
 
 const discovered = options.binary ? { path: options.binary, source: 'flag' } : findBinary(bundledDir)
 

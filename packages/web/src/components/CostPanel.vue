@@ -28,6 +28,8 @@ import { DEEPSEEK_RATES, isPeak } from '../../../bridge/src/pricing.mjs'
 import type { SessionView } from '../types'
 
 const props = defineProps<{
+  /** 由设置页内嵌时不给遮罩。 */
+  inline?: boolean
   /** The sidebar's list: every session the bridge knows about. */
   sessions: SessionView[]
   /** Highlighted row, and the session a click would go back to. */
@@ -224,6 +226,7 @@ const STATUS: Record<string, { label: string; tone: string }> = {
 
 <template>
   <ShellDialog
+    :inline="inline"
     title="费用统计"
     :meta="sessions.length > 0 ? `${sessions.length} 个会话` : '未打开会话'"
     :width="800"

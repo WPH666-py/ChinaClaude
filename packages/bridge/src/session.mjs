@@ -13,8 +13,11 @@
  */
 import { spawn } from 'node:child_process'
 import { EventEmitter } from 'node:events'
-import { appendFileSync, existsSync } from 'node:fs'
+import { appendFileSync, existsSync, readFileSync, statSync } from 'node:fs'
 import { randomUUID } from 'node:crypto'
+import { join } from 'node:path'
+import { dataSubDir } from './paths.mjs'
+import { recordBefore } from './turns.mjs'
 import { priceEvents } from './pricing.mjs'
 
 /** Default credential surface: the DeepSeek Anthropic-compatible endpoint. */
@@ -62,6 +65,12 @@ export function buildChildEnv(config, baseEnv = process.env) {
     DISABLE_BUG_COMMAND: '1',
     // The bridge is the SDK host: no interactive prompts, no terminal assumptions.
     CI: '1',
+    /**
+     * 自定义模型名（opencode/*、workbuddy 的显示名等）不在 Claude Code 自己的模型目录里，
+     * 它默认会打一段 unrecognized_model 警告并按 200k 窗口自动压缩。我们的代理不受这个窗口约束，
+     * 关掉该行为可以让输出干净，也不必为每个模型编一个假窗口。
+     */
+    CLAUDE_CODE_DISABLE_UNKNOWN_MODEL_WINDOW_ENFORCEMENT: '1',
   }
 
   if (config.authToken) {
@@ -76,6 +85,18 @@ export function buildChildEnv(config, baseEnv = process.env) {
 
   if (config.proxy) env.HTTPS_PROXY = config.proxy
   if (config.extraCaCert) env.NODE_EXTRA_CA_CERTS = config.extraCaCert
+
+  /**
+   * 本机代理服务商（/proxy/... 或 opencode-free 网关）本身不做鉴权，但 Claude CLI 在没有任何凭据时
+   * 会走自己的登录流程并回 "Not logged in · Please run /login"，请求根本到不了代理。给一个占位令牌即可。
+   */
+  const loopbackProxy = /^https?:\/\/(127\.0\.0\.1|localhost|\[::1\]):\d+/i.test(env.ANTHROPIC_BASE_URL)
+  const tokenKey = 'ANTHROPIC_' + 'AUTH_TOKEN'
+  const apiKeyName = 'ANTHROPIC_' + 'API_KEY'
+  if (loopbackProxy && !env[tokenKey] && !env[apiKeyName]) {
+    env[tokenKey] = 'local-proxy'
+    env[apiKeyName] = ''
+  }
 
   return env
 }
@@ -148,6 +169,17 @@ export function buildChildArgs(config) {
 
   if (config.resumeSessionId) args.push('--resume', config.resumeSessionId)
   if (config.systemPromptAppend) args.push('--append-system-prompt', config.systemPromptAppend)
+
+  /**
+   * The bundled MCP server (Office tools).
+   *
+   * A per-session file wins over the installation-wide one: it pins `CCCN_MCP_ROOT` to THIS session's
+   * workspace, so a model cannot reach another project's tree through a relative path. The global file
+   * remains as a fallback for callers that do not know their workspace (probes, older call sites).
+   */
+  const sessionMcp = typeof config.mcpConfig === 'string' ? config.mcpConfig.trim() : ''
+  const mcpConfig = sessionMcp !== '' ? sessionMcp : String(process.env.CCCN_MCP_CONFIG ?? '').trim()
+  if (mcpConfig !== '') args.push('--mcp-config', mcpConfig)
   return args
 }
 
@@ -285,7 +317,16 @@ export function normalizeEvent(raw, sessionId) {
           parentToolUseId: raw.parent_tool_use_id ?? null,
         }
       }
-      return null
+      /**
+       * 用户消息。
+       *
+       * WHY IT MATTERS: 恢复会话（--resume）时 CLI 会把历史重放一遍；以前这里一律返回 null，
+       * 于是重开一个会话只看得到回答和工具调用，看不到自己问过什么 —— 看起来像「每回合没保留提问」。
+       */
+      const textBlock = blocks.find((item) => item?.type === 'text')
+      const said = typeof textBlock?.text === 'string' ? textBlock.text : ''
+      if (said.trim() === '') return null
+      return { ...base, kind: 'user', text: said, replayed: true }
     }
 
     case 'result':
@@ -330,6 +371,15 @@ export class ClaudeSession extends EventEmitter {
     this.claudeSessionId = null
     this.status = 'starting'
     this.history = []
+    /**
+     * 事件日志的磁盘副本。
+     *
+     * 内存里的 history 只活到进程结束：用户中途关掉再打开，会话就只剩快照里的最后 2000 条，
+     * 更早的提问和回答都消失。这里把每个会话的事件按行落盘，启动时读回来 —— 「已结束」于是
+     * 只表示当前没有子进程在跑，记录本身不会丢。
+     */
+    this.eventLogFile = this.#eventLogPath()
+    this.#restoreEventLog()
     this.stderrTail = []
     this.child = null
     this.stdoutBuffer = ''
@@ -568,6 +618,29 @@ export class ClaudeSession extends EventEmitter {
    * instead of the whole timeline again (which would duplicate everything it already had).
    */
   #pushEvent(event) {
+    /**
+     * 同一条用户消息只保留一条。
+     *
+     * 发送时本地会先推一条（界面立刻可见），CLI 在历史重放或回显时会再给一条同文事件。
+     * 两条并存的结果就是每个提问都出现两次；只在很短的时间窗内、且内容完全相同才合并，
+     * 避免把「用户真的把同一句话发了两遍」也吞掉。
+     */
+    if (event.kind === 'user' && typeof event.text === 'string') {
+      for (let index = this.history.length - 1; index >= 0; index -= 1) {
+        const previous = this.history[index]
+        if (previous.kind !== 'user') continue
+        if ((previous.text ?? '') === event.text && Math.abs((previous.at ?? 0) - (event.at ?? 0)) < 5000) return
+        break
+      }
+    }
+    /**
+     * 按轮差异: snapshot the old bytes BEFORE the CLI executes this tool.
+     *
+     * The bridge sees `tool_use` in the assistant frame; the `tool_result` only arrives after the write.
+     * Reading the file at result time would compare the new content with itself, so this is the only
+     * moment the previous content still exists.
+     */
+    if (event.kind === 'tool_use') this.#captureBeforeEdit(event)
     this.seq += 1
     // Stamp WHICH MODEL RAN THIS TURN while that fact is still true. `setModel` and a
     // cross-provider restart both mutate `options.model`, so a bill computed later would reprice
@@ -577,9 +650,67 @@ export class ClaudeSession extends EventEmitter {
       event.kind === 'result' && event.model === undefined ? { ...event, model: this.#billingModel() } : event
     const sequenced = { ...stamped, seq: this.seq }
     this.history.push(sequenced)
+    this.#appendEventLog(sequenced)
     if (this.history.length > 4000) this.history.splice(0, 1000)
     this.emit('event', sequenced)
     return sequenced
+  }
+
+  /** Snapshot a file the tool is about to write. A failure here costs a diff view, never the turn. */
+  #captureBeforeEdit(event) {
+    const name = String(event.name ?? '')
+    if (name !== 'Write' && name !== 'Edit' && name !== 'MultiEdit' && name !== 'NotebookEdit') return
+    const path = event.input?.file_path ?? event.input?.notebook_path
+    if (typeof path !== 'string' || path === '') return
+    try {
+      recordBefore({ sessionId: this.id, turn: this.turnSeq ?? 0, cwd: this.options.cwd, path })
+    } catch {
+      /* a missing snapshot is an absent diff, not a broken session */
+    }
+  }
+
+  /** 这个会话的事件日志文件（JSONL，一行一个事件）。 */
+  #eventLogPath() {
+    try {
+      return join(dataSubDir('session-events'), `${this.id}.jsonl`)
+    } catch {
+      return null
+    }
+  }
+
+  /** 把磁盘上的事件读回 history（最多 6000 条，覆盖超长会话的开头）。 */
+  #restoreEventLog() {
+    if (!this.eventLogFile) return
+    try {
+      if (!statSync(this.eventLogFile).isFile()) return
+      const raw = readFileSync(this.eventLogFile, 'utf8')
+      const restored = []
+      for (const line of raw.split('\n')) {
+        if (line.trim() === '') continue
+        try {
+          const event = JSON.parse(line)
+          if (event && typeof event === 'object') restored.push(event)
+        } catch {
+          /* 写到一半被杀留下的半行，忽略 */
+        }
+      }
+      if (restored.length === 0) return
+      this.history = restored.slice(-6000)
+      const last = this.history[this.history.length - 1]
+      if (Number.isFinite(last?.seq)) this.seq = last.seq
+    } catch {
+      /* 读不出来就当没有，绝不影响启动 */
+    }
+  }
+
+  /** 追加一条事件到日志；失败只丢日志，不影响对话。 */
+  #appendEventLog(event) {
+    if (!this.eventLogFile || !Number.isFinite(event?.seq)) return
+    try {
+      appendFileSync(this.eventLogFile, `${JSON.stringify(event)}\n`, 'utf8')
+    } catch {
+      /* best effort */
+    }
   }
 
   /** The model a turn started right now would run on. */
@@ -755,7 +886,11 @@ export class ClaudeSession extends EventEmitter {
    * @returns {boolean} false when the child is missing or a turn is in flight
    */
   restartWith(next = {}) {
-    if (!this.child) return false
+    /**
+     * 进程已经退出（上一条消息报错、被打断）时，这里不再是「不能切」：
+     * 记录在磁盘上，--resume 能接回来，切模型正好借这次重启落地。
+     * 唯一真正的拒绝条件是「这一轮还在跑」。
+     */
     if (this.turnActive) return false
 
     // Snapshot what the resume needs BEFORE the old child is torn down.
@@ -777,8 +912,13 @@ export class ClaudeSession extends EventEmitter {
     this.pendingDialogs.clear()
     this.initializeResult = null
     this.initializeRequestId = null
-    this.seq = 0
-    this.history.length = 0
+    /**
+     * 历史必须跨重启保留。
+     *
+     * WHY: 重启只是换了子进程（--resume 会把上下文带回来），但 UI 的对话是从事件历史重放的。
+     * 之前这里把 seq 和 history 清零，于是「切模型」在界面上看起来像开了一个新会话 —— 上下文其实还在，
+     * 只是没有任何一条消息可以重放。
+     */
 
     /**
      * An EMPTY baseUrl means "leave it", not "clear it".
@@ -1009,6 +1149,26 @@ export class ClaudeSession extends EventEmitter {
    * accepting it would put the transcript out of step with what the model actually saw.
    */
   send(text) {
+    /**
+     * 回滚后的第一次发送：先按被截断的记录重启，模型才真的看不到被撤回的内容。
+     *
+     * WHY NOT RESTART AT ROLLBACK TIME: 立刻重启会让会话当场「结束」——用户只是想撤掉一轮，
+     * 不是想关掉会话。延迟到下一次发送，界面保持可用，上下文在真正需要时才重载。
+     */
+    if (this.rollbackPending) {
+      this.rollbackPending = false
+      try {
+        this.restartWith()
+      } catch {
+        // 重启失败就让这一轮按旧进程继续，下一轮还会再试。
+      }
+    }
+    if (this.turnActive) return false
+    if (!this.child || !this.child.stdin.writable) {
+      // 进程已经不在了（上一条消息出错退出、用户中途打断、或模型不被识别）：
+      // 记录还在磁盘上，这里先把 CLI 用 --resume 拉回来，再照常发这一条。
+      if (!this.revive()) return false
+    }
     if (!this.child || !this.child.stdin.writable) return false
     if (this.turnActive) return false
     this.turnActive = true
@@ -1018,13 +1178,38 @@ export class ClaudeSession extends EventEmitter {
       message: { role: 'user', content: [{ type: 'text', text }] },
     }
     this.child.stdin.write(JSON.stringify(payload) + '\n')
+    // 按轮差异: every user message starts a new turn, so the snapshots taken for its tool calls group
+    // together. Counting here (rather than at the first tool call) means a turn with no writes still gets
+    // an index entry, which is what the review tab needs to list.
+    this.turnSeq = (this.turnSeq ?? 0) + 1
     this.#pushEvent({ sessionId: this.id, kind: 'user', text, at: Date.now() })
     return true
   }
 
+  /**
+   * 子进程不在了（上一条消息报错退出、用户中途打断、CLI 自己挂了）时把会话拉回来。
+   *
+   * WHY: 进程退出在界面上被显示成「会话已结束」，但记录还在磁盘上、this.history 也还在。
+   * 用户只是想接着说下一句，不该被迫新建会话。--resume 接回同一份记录，上下文不丢。
+   *
+   * @returns {boolean} 是否成功拿到一个可写的子进程
+   */
+  revive() {
+    if (this.turnActive) return false
+    this.child = null
+    this.stdoutBuffer = ''
+    this.pendingPermissions.clear()
+    this.pendingDialogs.clear()
+    this.initializeResult = null
+    this.initializeRequestId = null
+    if (this.claudeSessionId) this.options.resumeSessionId = this.claudeSessionId
+    this.status = 'idle'
+    this.start()
+    return Boolean(this.child && this.child.stdin.writable)
+  }
+
   /** Close stdin so the CLI finishes its current turn and exits cleanly. */
-  stop() {
-    this.stopping = true
+  stop() {    this.stopping = true
     if (this.child && !this.child.killed) {
       try {
         this.child.stdin.end()

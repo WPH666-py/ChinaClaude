@@ -23,6 +23,13 @@ import DefendPanel from './DefendPanel.vue'
 import RulesPanel from './RulesPanel.vue'
 import ContextPanel from './ContextPanel.vue'
 import CostPanel from './CostPanel.vue'
+import ConnectorsPanel from './ConnectorsPanel.vue'
+import WorkbenchPanel from './WorkbenchPanel.vue'
+import OfficePanel from './OfficePanel.vue'
+import SSHPanel from './SSHPanel.vue'
+import IMPanel from './IMPanel.vue'
+import SearchPanel from './SearchPanel.vue'
+import QAPanel from './QAPanel.vue'
 import { shellGet } from '../composables/useShellApi'
 import type { BridgeEvent, PricedTimeline, SessionView } from '../types'
 
@@ -52,6 +59,8 @@ const props = defineProps<{
   sessions?: SessionView[]
   sessionCost?: PricedTimeline | null
   modelContext?: { window?: number; model?: string } | null
+  /** 由设置页内嵌显示时不给遮罩，交给父容器排版。 */
+  inline?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -100,6 +109,13 @@ const FEATURE_PANELS = {
   rules: RulesPanel,
   context: ContextPanel,
   cost: CostPanel,
+  workbench: WorkbenchPanel,
+  connectors: ConnectorsPanel,
+  office: OfficePanel,
+  ssh: SSHPanel,
+  im: IMPanel,
+  search: SearchPanel,
+  qa: QAPanel,
 } as const
 
 type FeatureKey = keyof typeof FEATURE_PANELS
@@ -119,7 +135,7 @@ function openPlugin(row: PluginRow) {
 }
 
 /** Rows that cannot run without a workspace say so up front rather than failing after a click. */
-const NEEDS_WORKSPACE = new Set(['memory', 'time-machine', 'git'])
+const NEEDS_WORKSPACE = new Set(['memory', 'time-machine', 'git', 'workbench', 'qa'])
 function disabledReason(row: PluginRow): string | null {
   if (NEEDS_WORKSPACE.has(row.port.feature) && !props.cwd) return '需要先打开一个工作目录'
   if (row.port.feature === 'context' && !props.sessionId) return '需要先打开一个会话'
@@ -143,7 +159,13 @@ onMounted(load)
 </script>
 
 <template>
-  <ShellDialog title="插件管理" :meta="`已内置 ${plugins.length} 个插件的能力`" :width="820" @close="emit('close')">
+  <ShellDialog
+    title="插件管理"
+    :meta="`已内置 ${plugins.length} 个插件的能力`"
+    :width="820"
+    :inline="inline"
+    @close="emit('close')"
+  >
     <template #actions>
       <button class="btnGhost" type="button" :disabled="loading" @click="load">
         {{ loading ? '读取中…' : '刷新' }}
@@ -195,6 +217,8 @@ onMounted(load)
   </ShellDialog>
 
   <!-- Feature windows render above this one, each owning its own data. -->
+  <SearchPanel v-if="openFeature === 'search'" @close="openFeature = null" />
+  <QAPanel v-else-if="openFeature === 'qa'" :cwd="cwd ?? null" @close="openFeature = null" />
   <MemoryPanel v-if="openFeature === 'memory'" :cwd="cwd ?? null" @close="openFeature = null" />
   <VisionPanel v-else-if="openFeature === 'vision'" :cwd="cwd ?? null" @close="openFeature = null" />
   <TimeMachinePanel v-else-if="openFeature === 'time-machine'" :cwd="cwd ?? null" @close="openFeature = null" />
@@ -216,6 +240,11 @@ onMounted(load)
     @close="openFeature = null"
     @select="(id: string) => emit('select-session', id)"
   />
+  <WorkbenchPanel v-else-if="openFeature === 'workbench'" :cwd="cwd ?? null" :session-id="sessionId ?? null" @close="openFeature = null" />
+  <ConnectorsPanel v-else-if="openFeature === 'connectors'" @close="openFeature = null" />
+  <OfficePanel v-else-if="openFeature === 'office'" @close="openFeature = null" />
+  <SSHPanel v-else-if="openFeature === 'ssh'" @close="openFeature = null" />
+  <IMPanel v-else-if="openFeature === 'im'" @close="openFeature = null" />
 </template>
 
 <style scoped>

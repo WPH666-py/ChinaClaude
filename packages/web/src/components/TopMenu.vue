@@ -13,10 +13,11 @@
  */
 import { ref } from 'vue'
 import LogViewerPanel from './LogViewerPanel.vue'
-import PluginManagerPanel from './PluginManagerPanel.vue'
+
 import AuthorPanel from './AuthorPanel.vue'
 import ShopPanel from './ShopPanel.vue'
 import FeedbackPanel from './FeedbackPanel.vue'
+
 import { invokeShell } from '../composables/useShellApi'
 import type { BridgeEvent, PricedTimeline, SessionView } from '../types'
 
@@ -40,16 +41,38 @@ const props = withDefaults(
     modelContext?: { window?: number; model?: string } | null
     /** Supplied by the app root, which owns the update dialog and the bridge handle. */
     checkUpdate?: () => Promise<UpdateOutcome>
+    /**
+     * 小屏：只藏按钮行，组件仍然渲染。
+     *
+     * 运行日志 / 作者 / 商城是 TopMenu 自己的弹窗，藏掉组件就等于藏掉它们的能力，
+     * 所以悬浮球通过下面 expose 的方法远程触发，而不是另起一套。
+     */
+    compact?: boolean
   }>(),
-  { version: '', cwd: null, sessionId: null },
+  { version: '', cwd: null, sessionId: null, compact: false },
 )
 
 const emit = defineEmits<{
   (e: 'open-settings', section: string): void
   (e: 'select-session', id: string): void
+  /** The workbench is a right-hand dock now, so the menu only asks the shell to toggle it. */
+  (e: 'toggle-workbench'): void
+  /** 打开整页的服务器管理（不是弹窗）。 */
+  (e: 'open-server'): void
+  (e: 'open-mobile'): void
 }>()
 
-type Window = 'logs' | 'plugins' | 'author' | 'shop' | 'feedback' | null
+/** 悬浮球远程触发的入口：只暴露「打开某个弹窗」这类动作，不碰内部状态。 */
+defineExpose({
+  restart,
+  checkUpdates,
+  showLogs: () => (open.value = 'logs'),
+  showAuthor: () => (open.value = 'author'),
+  showShop: () => (open.value = 'shop'),
+  showFeedback: () => (open.value = 'feedback'),
+})
+
+type Window = 'logs' | 'plugins' | 'author' | 'shop' | 'feedback' | 'server' | null
 const open = ref<Window>(null)
 /** One line of feedback for the actions that have nowhere else to report. */
 const notice = ref('')
@@ -96,12 +119,6 @@ async function restart() {
   }
 }
 
-async function quit() {
-  say('正在退出…')
-  const answer = await invokeShell('shell_quit')
-  if (!answer.ok) sayBriefly(`退出失败：${answer.error ?? '未知原因'}`)
-}
-
 async function devtools() {
   const answer = await invokeShell('shell_devtools')
   sayBriefly(answer.ok ? '已打开开发者工具' : `打开失败：${answer.error ?? '未知原因'}`)
@@ -109,44 +126,44 @@ async function devtools() {
 </script>
 
 <template>
-  <div class="tm">
-    <span class="tm__brand">ChinaClaude</span>
-
+  <div class="tm" :class="{ 'tm--compact': compact }">
     <button class="tm__item" type="button" :disabled="busy" @click="restart">重启</button>
     <button class="tm__item" type="button" @click="open = 'logs'">运行日志</button>
-    <button class="tm__item" type="button" @click="open = 'plugins'">插件管理</button>
+    <button class="tm__item" type="button" :title="cwd ? cwd : '先打开一个工作目录'" @click="emit('toggle-workbench')">工作台</button>
+    <button class="tm__item" type="button" @click="emit('open-settings', 'plugins')">插件管理</button>
     <button class="tm__item" type="button" :disabled="busy" @click="checkUpdates">检查更新</button>
     <button class="tm__item" type="button" @click="emit('open-settings', 'models')">API 密钥</button>
     <button class="tm__item" type="button" @click="open = 'author'">作者信息</button>
     <button class="tm__item" type="button" @click="open = 'shop'">休闲食品商城</button>
     <button class="tm__item" type="button" @click="open = 'feedback'">评价与反馈</button>
     <button class="tm__item" type="button" @click="devtools">开发者工具</button>
-    <button class="tm__item tm__item--danger" type="button" @click="quit">退出</button>
+    <button class="tm__item" type="button" @click="emit('open-mobile')">移动访问</button>
+        <button class="tm__item" type="button" @click="emit('open-server')">服务器管理</button>
 
     <span class="tm__spacer" />
     <span v-if="notice" class="tm__notice">{{ notice }}</span>
-    <span v-if="version" class="tm__version">v{{ version }}</span>
   </div>
 
   <LogViewerPanel v-if="open === 'logs'" @close="open = null" />
-  <PluginManagerPanel
-    v-else-if="open === 'plugins'"
-    :cwd="cwd"
-    :session-id="sessionId"
-    :session-events="sessionEvents"
-    :sessions="sessions"
-    :session-cost="sessionCost"
-    :model-context="modelContext"
-    @close="open = null"
-    @open-settings="(section: string) => { open = null; emit('open-settings', section) }"
-    @select-session="(id: string) => { open = null; emit('select-session', id) }"
-  />
   <AuthorPanel v-else-if="open === 'author'" @close="open = null" />
   <ShopPanel v-else-if="open === 'shop'" @close="open = null" />
   <FeedbackPanel v-else-if="open === 'feedback'" @close="open = null" />
+
 </template>
 
 <style scoped>
+/* 小屏：按钮行交给悬浮球；只把这一条横栏收成 0 高，弹窗仍在树里（隐藏组件会连弹窗一起隐藏）。 */
+.tm--compact {
+  height: 0;
+  padding: 0;
+  border-bottom: none;
+  background: transparent;
+}
+.tm--compact > .tm__item,
+.tm--compact > .tm__version {
+  display: none;
+}
+
 .tm {
   display: flex;
   flex: none;

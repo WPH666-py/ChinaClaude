@@ -82,6 +82,48 @@ const attaching = ref(false)
 const attachError = ref<string | null>(null)
 const openMenu = ref<'mode' | 'model' | 'effort' | null>(null)
 
+/** 语音输入：WebView 自带识别能力，不经过桥，也不把音频交给本应用以外的服务。 */
+const listening = ref(false)
+const voiceError = ref('')
+let recognizer: { start: () => void; stop: () => void } | null = null
+
+function toggleVoice() {
+  const scope = window as unknown as { SpeechRecognition?: new () => any; webkitSpeechRecognition?: new () => any }
+  const Ctor = scope.SpeechRecognition ?? scope.webkitSpeechRecognition
+  if (!Ctor) {
+    voiceError.value = '这个 WebView 没有语音识别能力（Windows 语音包缺失时会这样）'
+    return
+  }
+  if (listening.value) {
+    recognizer?.stop()
+    listening.value = false
+    return
+  }
+  const instance = new Ctor() as any
+  instance.lang = 'zh-CN'
+  instance.interimResults = true
+  instance.continuous = false
+  const base = text.value
+  instance.onresult = (event: any) => {
+    let said = ''
+    for (let index = event.resultIndex; index < event.results.length; index += 1) {
+      said += event.results[index][0].transcript
+    }
+    text.value = base === '' ? said : `${base} ${said}`
+  }
+  instance.onerror = (event: any) => {
+    voiceError.value = event.error === 'not-allowed' ? '麦克风权限被拒绝' : `语音识别失败：${event.error}`
+    listening.value = false
+  }
+  instance.onend = () => {
+    listening.value = false
+  }
+  recognizer = instance
+  voiceError.value = ''
+  instance.start()
+  listening.value = true
+}
+
 /**
  * Reasoning-effort choices, labelled rather than shown raw.
  *
@@ -163,6 +205,13 @@ async function onFilesPicked(event: Event) {
   }
 }
 
+/*
+ * 本轮执行中锁住「模型 / 推理档位」：切换要让桥重启子进程，正在跑的时候切只会被拒绝。
+ * 想换就点中断，停下来再选——这比让用户点了没反应更清楚。
+ */
+const switchLocked = computed(() => props.disabled || props.busy)
+const switchLockHint = computed(() => (props.busy ? '本轮执行中：先点「中断」，再切换模型或推理档位' : ''))
+
 const canSend = computed(() => !props.disabled && !props.busy && text.value.trim().length > 0)
 
 /** The preset matching the session's CURRENT mode, for the trigger label. */
@@ -180,7 +229,23 @@ const modeLabel = computed(() => currentPreset.value?.label ?? props.permissionM
  * and against a relay endpoint they are answered by server-side mapping rather than being a real
  * choice. It only appears when the user opts in from settings.
  */
-const modelOptions = computed(() => store.modelOptions())
+/**
+ * 去重后的模型列表：同一模型的「档位变体」只保留一条。
+ *
+ * WHY: Trae 的清单里 `gpt-5.4` 与 `gpt-5.4-mini` 是同一个模型的不同推理档位，全列出来会让下拉长得离谱、
+ * 且让人以为要分别配置。这里把 `-mini/-max/-high/-low/-medium` 后缀归到基础名，只显示基础名；
+ * 选中后由服务商决定实际档位（代理本来就不按模型名路由）。
+ */
+const modelOptions = computed(() => {
+  const seen = new Map<string, (typeof store.modelOptions extends () => (infer T)[] ? T : never)>()
+  for (const option of store.modelOptions()) {
+    const base = option.model.replace(/-(mini|max|high|low|medium)$/i, '')
+    const key = `${option.providerId}::${base}`
+    if (seen.has(key)) continue
+    seen.set(key, option)
+  }
+  return [...seen.values()]
+})
 
 /** The option matching what this session is actually running, if we can identify it. */
 const currentOption = computed(() => {
@@ -404,12 +469,29 @@ watch(openMenu, (value) => {
             depend on a configured provider, because the level is a property of whatever model is
             already running.
           -->
+          <!-- 语音输入：放在推理强度左边，和「怎么想」的动作挨在一起。 -->
+          <button
+            class="composer__select composer__voice"
+            :class="{ 'composer__voice--on': listening }"
+            type="button"
+            :disabled="disabled"
+            :title="voiceError || (listening ? '正在听，再点一次停止' : '语音输入')"
+            @click="toggleVoice"
+          >
+            <svg width="13" height="13" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+              <rect x="6" y="2" width="4" height="8" rx="2" stroke="currentColor" stroke-width="1.4" />
+              <path d="M3.5 7.5a4.5 4.5 0 0 0 9 0" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" />
+              <path d="M8 12v2" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" />
+            </svg>
+          </button>
+
           <div v-if="!disabled" class="pop" data-popup>
             <button
               class="composer__select"
               type="button"
-              title="推理强度：越高思考越多、越慢"
-              @click="openMenu = openMenu === 'effort' ? null : 'effort'"
+              :disabled="switchLocked"
+              :title="switchLockHint || '推理强度：越高思考越多、越慢'"
+              @click="switchLocked ? null : (openMenu = openMenu === 'effort' ? null : 'effort')"
             >
               <span>{{ effortLabel }}</span>
               <span class="reason__caret" />
@@ -435,15 +517,15 @@ watch(openMenu, (value) => {
 
           <!-- model: only offered once a provider exists, otherwise there is nothing to choose -->
           <div v-if="hasConfiguredModels" class="pop" data-popup>
-            <button class="composer__select" type="button" :disabled="disabled" @click="openMenu = openMenu === 'model' ? null : 'model'">
+            <button class="composer__select" type="button" :disabled="switchLocked" :title="switchLockHint || '选择模型'" @click="switchLocked ? null : (openMenu = openMenu === 'model' ? null : 'model')">
               <span v-if="modelUnconfigured" class="composer__warn" title="该模型不属于任何已配置的服务商">
                 !
               </span>
-              <span>{{ modelLabel }}</span>
+              <span class="composer__modelText">{{ modelLabel }}</span>
               <span class="reason__caret" />
             </button>
 
-            <div v-if="openMenu === 'model'" class="pop__menu pop__menu--right">
+            <div v-if="openMenu === 'model'" class="pop__menu pop__menu--right pop__menu--scroll">
               <button
                 class="pop__item"
                 :class="{ 'pop__item--on': !model }"
@@ -463,9 +545,8 @@ watch(openMenu, (value) => {
                 @click="pickModel(option.ref)"
               >
                 <span class="pop__itemLabel">{{ option.label }}</span>
-                <!-- The provider is shown because a bare model name does not identify an endpoint. -->
+                <!-- 只保留「模型名 + 平台」：模型 id 与端点由平台决定，重复展示反而干扰选择。 -->
                 <span class="pop__itemMode">{{ option.providerName }}</span>
-                <span v-if="option.model !== option.label" class="pop__itemDesc">{{ option.model }}</span>
               </button>
 
               <button class="pop__foot" type="button" @click="openMenu = null; emit('open-settings')">
@@ -529,10 +610,21 @@ watch(openMenu, (value) => {
   box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5);
 }
 
+.composer__voice {
+  gap: 0;
+  padding: 0 8px;
+}
+
+.composer__voice--on {
+  color: #ff8a5c;
+  box-shadow: inset 0 0 0 1px rgba(255, 138, 92, 0.55);
+}
+
 .pop__menu--right {
   left: auto;
   right: 0;
   min-width: 240px;
+  max-width: min(340px, calc(100vw - 32px));
 }
 
 .pop__item {
@@ -556,6 +648,9 @@ watch(openMenu, (value) => {
 .pop__itemLabel {
   font-size: 12.5px;
   font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .pop__item--danger .pop__itemLabel {
@@ -566,6 +661,10 @@ watch(openMenu, (value) => {
   color: var(--dsw-alias-label-caption);
   font-family: var(--dsw-font-family-code);
   font-size: 10.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 45%;
 }
 
 .pop__itemDesc {

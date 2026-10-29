@@ -18,8 +18,10 @@ const props = withDefaults(
     meta?: string
     /** Max width in px. Wide windows (the shop grid) pass their own. */
     width?: number
+    /** 内嵌模式：不铺遮罩、不浮动，交给父容器决定尺寸（中间区的 Git 视图用）。 */
+    inline?: boolean
   }>(),
-  { meta: '', width: 720 },
+  { meta: '', width: 720, inline: false },
 )
 
 const emit = defineEmits<{ (e: 'close'): void }>()
@@ -36,10 +38,10 @@ void props
 </script>
 
 <template>
-  <div class="sd">
-    <div class="sd__scrim" @click="emit('close')" />
+  <div class="sd" :class="{ 'sd--inline': inline }">
+    <div v-if="!inline" class="sd__scrim" @click="emit('close')" />
 
-    <div class="sd__panel" :style="{ maxWidth: `${width}px` }" role="dialog" :aria-label="title">
+    <div class="sd__panel" :style="inline ? undefined : { maxWidth: `${width}px` }" role="dialog" :aria-label="title">
       <header class="sd__head">
         <span class="sd__title">{{ title }}</span>
         <span v-if="meta" class="sd__meta">{{ meta }}</span>
@@ -137,5 +139,21 @@ void props
   border-top: 0.5px solid var(--dsw-alias-border-l1);
   color: var(--dsw-alias-label-caption);
   font-size: 11.5px;
+}
+
+/* 内嵌形态：对话框变成普通容器，由父级布局决定高宽。 */
+.sd--inline {
+  position: static;
+  height: 100%;
+}
+
+.sd--inline .sd__panel {
+  position: static;
+  width: 100%;
+  max-width: none;
+  height: 100%;
+  max-height: none;
+  border-radius: 0;
+  box-shadow: none;
 }
 </style>
